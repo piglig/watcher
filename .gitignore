@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Login sessions (contain auth cookies — never commit)
+.session/
+.session-twitter/
+.session-threads/
+.session-pixiv/
+.session-naver/
+.session-tiktok/
+
+# Scraper output & temp files
+*.progress.json
+debug_response.json
+debug_threads_response.json
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+*.html
+*.csv
