@@ -68,6 +68,7 @@ function parseTweetResult(raw) {
 
   return {
     id:         tweetId,
+    authorId:   tweetData.user_id_str ?? null,   // numeric author ID from legacy; used for ownership filtering
     platform:   'twitter',
     url:        userData.screen_name
       ? `https://x.com/${userData.screen_name}/status/${tweetId}`

@@ -7,15 +7,25 @@ export async function extractFromDOM(page) {
   return page.evaluate(() => {
     const articles = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
     return articles.map(article => {
-      const timeLink = article.querySelector('a[href*="/status/"]');
-      const href     = timeLink?.getAttribute('href') ?? '';
-      const idMatch  = href.match(/\/status\/(\d+)/);
-      const tweetId  = idMatch?.[1] ?? '';
+      // Anchor wrapping <time> is always the tweet's own timestamp link.
+      // Context/parent tweets shown above a reply appear WITHOUT a <time> element,
+      // so this avoids accidentally picking up the parent's /status/ link first.
+      const timeEl   = article.querySelector('time');
+      const timeLink = timeEl
+        ? (timeEl.closest('a[href*="/status/"]') ?? article.querySelector('a[href*="/status/"]'))
+        : article.querySelector('a[href*="/status/"]');
 
-      const textEl  = article.querySelector('[data-testid="tweetText"]');
-      const timeEl  = article.querySelector('time');
-      const userLink = article.querySelector('a[href^="/"][role="link"]');
-      const username = userLink?.getAttribute('href')?.replace('/', '') ?? '';
+      const href    = timeLink?.getAttribute('href') ?? '';
+      const idMatch = href.match(/\/status\/(\d+)/);
+      const tweetId = idMatch?.[1] ?? '';
+
+      // Derive username from the same link so they always match.
+      // Falls back to first role="link" anchor only when the href uses /i/web/status/.
+      const urlUsername = href.match(/^\/([^/]+)\/status\//)?.[1] ?? '';
+      const userLink    = urlUsername ? null : article.querySelector('a[href^="/"][role="link"]');
+      const username    = urlUsername || (userLink?.getAttribute('href')?.replace(/^\//, '') ?? '');
+
+      const textEl = article.querySelector('[data-testid="tweetText"]');
 
       const getStat = testId => {
         const btn   = article.querySelector(`[data-testid="${testId}"]`);

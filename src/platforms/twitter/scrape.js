@@ -109,12 +109,25 @@ export async function scrapeUser(username, context, opts = {}) {
 
   if (progressFile && existsSync(progressFile)) rmSync(progressFile);
 
+  // Determine the target user's numeric ID from the most common authorId in the map.
+  // This lets us filter by ID rather than username, which is immune to missing user_results.
+  const idCount = new Map();
+  for (const t of tweetMap.values()) {
+    if (t.authorId) idCount.set(t.authorId, (idCount.get(t.authorId) ?? 0) + 1);
+  }
+  const targetUserId = idCount.size
+    ? [...idCount.entries()].sort((a, b) => b[1] - a[1])[0][0]
+    : null;
+
   // Backfill author from the known target username:
-  // - Tweets with missing user_results: always backfill
-  // - Retweets: the API returns the ORIGINAL author in core.user_results;
-  //   override to the target user who performed the retweet action
+  // - Only backfill when authorId matches the target user, or for retweets
+  //   (retweets store the ORIGINAL author in core.user_results, not the retweeter)
+  // - Avoids misattributing conversation-context tweets (other users) to the target
   for (const tweet of tweetMap.values()) {
-    if (!tweet.author?.username || tweet.type === 'retweet') {
+    const isOwned = targetUserId
+      ? tweet.authorId === targetUserId
+      : !tweet.author?.username;   // fallback: assume ownership when no username at all
+    if (isOwned || tweet.type === 'retweet') {
       tweet.author = { ...tweet.author, username };
     }
     // Fix fallback URLs (/i/web/status/) now that we have the confirmed username
@@ -126,7 +139,10 @@ export async function scrapeUser(username, context, opts = {}) {
   const lc = username.toLowerCase();
   return Array.from(tweetMap.values())
     // Drop context tweets by other users included in conversation threads
-    .filter(t => !t.author?.username || t.author.username.toLowerCase() === lc)
+    .filter(t => {
+      if (targetUserId && t.authorId) return t.authorId === targetUserId;
+      return !t.author?.username || t.author.username.toLowerCase() === lc;
+    })
     .filter(filterFn)
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .slice(0, max);

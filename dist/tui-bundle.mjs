@@ -670,6 +670,8 @@ function parseTweetResult(raw) {
   }
   return {
     id: tweetId,
+    authorId: tweetData.user_id_str ?? null,
+    // numeric author ID from legacy; used for ownership filtering
     platform: "twitter",
     url: userData.screen_name ? `https://x.com/${userData.screen_name}/status/${tweetId}` : `https://x.com/i/web/status/${tweetId}`,
     text,
@@ -784,14 +786,15 @@ async function extractFromDOM(page) {
   return page.evaluate(() => {
     const articles = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
     return articles.map((article) => {
-      const timeLink = article.querySelector('a[href*="/status/"]');
+      const timeEl = article.querySelector("time");
+      const timeLink = timeEl ? timeEl.closest('a[href*="/status/"]') ?? article.querySelector('a[href*="/status/"]') : article.querySelector('a[href*="/status/"]');
       const href = timeLink?.getAttribute("href") ?? "";
       const idMatch = href.match(/\/status\/(\d+)/);
       const tweetId = idMatch?.[1] ?? "";
+      const urlUsername = href.match(/^\/([^/]+)\/status\//)?.[1] ?? "";
+      const userLink = urlUsername ? null : article.querySelector('a[href^="/"][role="link"]');
+      const username = urlUsername || (userLink?.getAttribute("href")?.replace(/^\//, "") ?? "");
       const textEl = article.querySelector('[data-testid="tweetText"]');
-      const timeEl = article.querySelector("time");
-      const userLink = article.querySelector('a[href^="/"][role="link"]');
-      const username = userLink?.getAttribute("href")?.replace("/", "") ?? "";
       const getStat = (testId) => {
         const btn = article.querySelector(`[data-testid="${testId}"]`);
         const label = btn?.getAttribute("aria-label") ?? "";
@@ -990,8 +993,14 @@ ${"\u2550".repeat(52)}`);
     await Promise.all([page1.close(), page2.close()]);
   }
   if (progressFile && existsSync3(progressFile)) rmSync2(progressFile);
+  const idCount = /* @__PURE__ */ new Map();
+  for (const t of tweetMap.values()) {
+    if (t.authorId) idCount.set(t.authorId, (idCount.get(t.authorId) ?? 0) + 1);
+  }
+  const targetUserId = idCount.size ? [...idCount.entries()].sort((a, b) => b[1] - a[1])[0][0] : null;
   for (const tweet of tweetMap.values()) {
-    if (!tweet.author?.username || tweet.type === "retweet") {
+    const isOwned = targetUserId ? tweet.authorId === targetUserId : !tweet.author?.username;
+    if (isOwned || tweet.type === "retweet") {
       tweet.author = { ...tweet.author, username };
     }
     if (tweet.url.includes("/i/web/status/") && tweet.author?.username) {
@@ -999,7 +1008,10 @@ ${"\u2550".repeat(52)}`);
     }
   }
   const lc = username.toLowerCase();
-  return Array.from(tweetMap.values()).filter((t) => !t.author?.username || t.author.username.toLowerCase() === lc).filter(filterFn).sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, max);
+  return Array.from(tweetMap.values()).filter((t) => {
+    if (targetUserId && t.authorId) return t.authorId === targetUserId;
+    return !t.author?.username || t.author.username.toLowerCase() === lc;
+  }).filter(filterFn).sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, max);
 }
 async function scrape(usernames, opts = {}) {
   const names = (Array.isArray(usernames) ? usernames : [usernames]).map(parseUsername).filter(Boolean);
