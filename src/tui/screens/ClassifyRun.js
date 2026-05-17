@@ -45,7 +45,7 @@ function useElapsed(active) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-const RECENT_LINES = 3;
+const RECENT_LINES = 5;
 
 export default function ClassifyRun({ config, onNav }) {
   const [recentLogs, setRecentLogs] = useState([]);

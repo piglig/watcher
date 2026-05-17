@@ -117,9 +117,16 @@ export async function scrapeUser(username, context, opts = {}) {
     if (!tweet.author?.username || tweet.type === 'retweet') {
       tweet.author = { ...tweet.author, username };
     }
+    // Fix fallback URLs (/i/web/status/) now that we have the confirmed username
+    if (tweet.url.includes('/i/web/status/') && tweet.author?.username) {
+      tweet.url = `https://x.com/${tweet.author.username}/status/${tweet.id}`;
+    }
   }
 
+  const lc = username.toLowerCase();
   return Array.from(tweetMap.values())
+    // Drop context tweets by other users included in conversation threads
+    .filter(t => !t.author?.username || t.author.username.toLowerCase() === lc)
     .filter(filterFn)
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .slice(0, max);

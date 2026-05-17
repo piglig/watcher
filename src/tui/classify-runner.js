@@ -7,6 +7,13 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { resolve, join, basename } from 'path';
 
+function sessionStamp() {
+  const d = new Date();
+  const date = d.toISOString().slice(0, 10);
+  const time = d.toTimeString().slice(0, 8).replace(/:/g, '');
+  return `${date}_${time}`;
+}
+
 import { submitBatch, fetchBatchResults, aggregateUserRisk } from '../classifier/classifier.js';
 import { applyRulesAll } from '../classifier/rules.js';
 import { toClassifierJSON, toUserRiskCSV, toFlaggedPostsCSV } from '../classifier/output.js';
@@ -42,7 +49,8 @@ export async function runClassify(config, onLog = () => {}) {
 
   if (!apiKey) throw new Error('OPENAI_API_KEY 未设置。请设置环境变量 $env:OPENAI_API_KEY。');
 
-  mkdirSync(resolve(outDir), { recursive: true });
+  const classifiedDir = join(resolve(outDir), 'classified');
+  mkdirSync(classifiedDir, { recursive: true });
 
   // ── Load posts from files ──────────────────────────────────────────────────
 
@@ -99,7 +107,7 @@ export async function runClassify(config, onLog = () => {}) {
       model,
       post_count:  llmPosts.length,
       input_files: inputFiles,
-      out:         resolve(outDir),
+      out:         classifiedDir,
     });
     if (!wait) {
       return { batchId: newId, status: 'submitted', postCount: llmPosts.length };
@@ -132,8 +140,8 @@ export async function runClassify(config, onLog = () => {}) {
   const allResults = { ...ruleResults, ...llmResults };
   const userRisk   = aggregateUserRisk(allPosts, allResults);
 
-  const ts   = new Date().toISOString().slice(0, 10);
-  const base = join(resolve(outDir), `classify_${ts}`);
+  const stamp = sessionStamp();
+  const base  = join(classifiedDir, stamp);
 
   const savedFiles = [];
 
@@ -149,7 +157,7 @@ export async function runClassify(config, onLog = () => {}) {
   writeFileSync(flagPath, toFlaggedPostsCSV(userRisk));
   savedFiles.push({ file: flagPath, label: '标记内容 (CSV)' });
 
-  onLog(`输出已写入 ${outDir}`);
+  onLog(`输出已写入 ${classifiedDir}`);
 
   return {
     batchId: resolvedBatchId ?? null,

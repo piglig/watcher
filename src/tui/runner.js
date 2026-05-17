@@ -67,8 +67,11 @@ function parseTargets(raw) {
   return raw.split(',').map(t => t.trim()).filter(Boolean);
 }
 
-function datestamp() {
-  return new Date().toISOString().slice(0, 10);
+function sessionStamp() {
+  const d = new Date();
+  const date = d.toISOString().slice(0, 10);
+  const time = d.toTimeString().slice(0, 8).replace(/:/g, '');
+  return `${date}_${time}`;
 }
 
 // ── Main scrape runner ────────────────────────────────────────────────────────
@@ -111,13 +114,16 @@ export async function runScrape(config) {
     debug:  false,
   };
 
-  mkdirSync(resolve(outDir), { recursive: true });
-  const ts          = datestamp();
+  const baseDir     = resolve(outDir);
+  const platformDir = join(baseDir, platform);
+  mkdirSync(platformDir, { recursive: true });
+
+  const stamp       = sessionStamp();
   const savedFiles  = [];
   let   totalCount  = 0;
 
   const save = (name, content, count, label) => {
-    const file = join(resolve(outDir), name);
+    const file = join(platformDir, name);
     writeFileSync(file, content);
     savedFiles.push({ file, count, label });
     totalCount += count;
@@ -130,7 +136,7 @@ export async function runScrape(config) {
       const profile = tweets[0]?.author
         ? { ...tweets[0].author, platform: 'twitter' }
         : null;
-      save(`twitter_${username}_${ts}.json`, toTwitterJSON(profile, tweets), tweets.length, `@${username}`);
+      save(`${stamp}_${username}.json`, toTwitterJSON(profile, tweets), tweets.length, `@${username}`);
     }
 
   } else if (platform === 'tiktok') {
@@ -138,7 +144,7 @@ export async function runScrape(config) {
     const results = await scrapeTikTok(parsed, opts);
     for (const [username, { profile, videos }] of Object.entries(results)) {
       if (!videos.length) continue;
-      save(`tiktok_${username}_${ts}.json`, toTikTokJSON(profile, videos), videos.length, `@${username}`);
+      save(`${stamp}_${username}.json`, toTikTokJSON(profile, videos), videos.length, `@${username}`);
     }
 
   } else if (platform === 'reddit') {
@@ -147,21 +153,21 @@ export async function runScrape(config) {
     for (const [target, items] of Object.entries(results)) {
       if (!items.length) continue;
       const safeName = target.replace(/\//g, '_');
-      save(`reddit_${safeName}_${ts}.json`, toRedditJSON(items), items.length, target);
+      save(`${stamp}_${safeName}.json`, toRedditJSON(items), items.length, target);
     }
 
   } else if (platform === 'threads') {
     const results = await scrapeThreads(targets, opts);
     for (const [username, threads] of Object.entries(results)) {
       if (!threads.length) continue;
-      save(`threads_${username}_${ts}.json`, toThreadsJSON(threads), threads.length, `@${username}`);
+      save(`${stamp}_${username}.json`, toThreadsJSON(threads), threads.length, `@${username}`);
     }
 
   } else if (platform === 'pixiv') {
     const results = await scrapePixiv(targets, opts);
     for (const [target, { artworks }] of Object.entries(results)) {
       if (!artworks.length) continue;
-      save(`pixiv_${target}_${ts}.json`, toPixivJSON(artworks), artworks.length, `Pixiv:${target}`);
+      save(`${stamp}_${target}.json`, toPixivJSON(artworks), artworks.length, `Pixiv:${target}`);
     }
 
   } else if (platform === 'naver') {
@@ -169,7 +175,7 @@ export async function runScrape(config) {
     for (const [url, { cafe, posts }] of Object.entries(results)) {
       if (!posts.length) continue;
       const name = (cafe?.name ?? url).replace(/[^a-z0-9_\-]/gi, '_');
-      save(`naver_${name}_${ts}.json`, toNaverJSON(posts, cafe?.memberCount), posts.length, name);
+      save(`${stamp}_${name}.json`, toNaverJSON(posts, cafe?.memberCount), posts.length, name);
     }
 
   } else if (platform === 'youtube') {
@@ -178,7 +184,7 @@ export async function runScrape(config) {
     for (const [target, { profile, videos }] of Object.entries(results)) {
       if (!videos.length) continue;
       const name = (profile?.handle ?? target).replace(/[@/]/g, '');
-      save(`youtube_${name}_${ts}.json`, toYouTubeJSON(profile, videos), videos.length, profile?.title ?? target);
+      save(`${stamp}_${name}.json`, toYouTubeJSON(profile, videos), videos.length, profile?.title ?? target);
     }
   }
 

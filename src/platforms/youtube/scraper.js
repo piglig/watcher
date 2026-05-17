@@ -236,14 +236,14 @@ export async function scrapeYouTubeChannel(target, apiKey, opts = {}) {
   if (!profile.uploads_playlist) throw new Error('No uploads playlist found.');
 
   // 2. Video IDs
-  process.stdout.write('  Fetching video list...');
+  console.log('Fetching video list...');
   const videoIds = await fetchVideoIds(yt, profile.uploads_playlist, max);
-  process.stdout.write(` ${videoIds.length} found\n`);
+  console.log(`${videoIds.length} videos found`);
 
   // 3. Video details
-  process.stdout.write('  Fetching video details...');
+  console.log('Fetching video details...');
   let videos = await fetchVideoDetails(yt, videoIds);
-  process.stdout.write(` done\n`);
+  console.log('Video details done');
 
   // 4. Filter + sort
   videos = videos
@@ -257,10 +257,9 @@ export async function scrapeYouTubeChannel(target, apiKey, opts = {}) {
     for (let i = 0; i < videos.length; i++) {
       const v = videos[i];
       v.transcript = await fetchTranscript(v.id, transcriptLangs);
-      process.stdout.write(`\r  Transcripts: ${i + 1}/${videos.length}...`);
+      console.log(`Transcripts: ${i + 1}/${videos.length}`);
       dbg(`${v.id}: transcript ${v.transcript ? v.transcript.length + ' chars' : 'empty'}`);
     }
-    process.stdout.write('\n');
   }
 
   return { profile, videos };

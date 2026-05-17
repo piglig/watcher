@@ -185,9 +185,8 @@ async function fetchArticleDetails(cafeId, idEntries, likeMap, dbg) {
       if (r.status === 'fulfilled' && r.value) results.push(r.value);
     }
     if (i + BATCH_SIZE < idEntries.length) await delay(BATCH_DELAY);
-    process.stdout.write(`\r  Fetching details: ${Math.min(i + BATCH_SIZE, idEntries.length)}/${idEntries.length}...`);
+    console.log(`Fetching details: ${Math.min(i + BATCH_SIZE, idEntries.length)}/${idEntries.length}`);
   }
-  process.stdout.write('\n');
   return results;
 }
 
@@ -347,9 +346,7 @@ export async function scrapeNaverCafe(target, page, opts = {}) {
           `https://cafe.naver.com/${target.slug}` +
           `?iframe_url=${encodeURIComponent(iframePath)}`;
 
-        process.stdout.write(
-          `\r  Board "${board.name}" — page ${pageNum} (${idSet.size} IDs)...`
-        );
+        console.log(`Board "${board.name}" — page ${pageNum} (${idSet.size} IDs)`);
 
         await page.goto(listUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
         await delay(NAV_DELAY);
@@ -364,7 +361,6 @@ export async function scrapeNaverCafe(target, page, opts = {}) {
       }
     }
 
-    process.stdout.write('\n');
   } finally {
     page.off('response', onResponse);
   }

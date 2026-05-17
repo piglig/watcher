@@ -1,17 +1,24 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
+import SelectInput from 'ink-select-input';
 import DirPicker from '../components/DirPicker.js';
 import StepBar from '../components/StepBar.js';
 import KeyBar from '../components/KeyBar.js';
 import { SYM } from '../theme.js';
 import { getConfig, setConfig } from '../../shared/config-store.js';
 
+const MODEL_ITEMS = [
+  { label: 'gpt-4.1-mini  快速省钱（推荐）', value: 'gpt-4.1-mini' },
+  { label: 'gpt-4.1       高精度',           value: 'gpt-4.1'      },
+  { label: 'gpt-4o-mini   备用',             value: 'gpt-4o-mini'  },
+];
+
 const STEPS = [
-  { key: 'openaiKey',  label: 'OpenAI API Key',  hint: '以 sk- 开头；留空保持现有值不变', mask: true,  type: 'text' },
-  { key: 'youtubeKey', label: 'YouTube API Key', hint: '仅采集 YouTube 时需要；留空跳过', mask: true,  type: 'text' },
-  { key: 'outDir',     label: '默认输出目录',                                               mask: false, type: 'dir'  },
-  { key: 'model',      label: '默认 AI 模型',    hint: '默认 gpt-4.1-mini',                mask: false, type: 'text' },
+  { key: 'openaiKey',  label: 'OpenAI API Key',  hint: '以 sk- 开头；留空保持现有值不变', mask: true,  type: 'text'   },
+  { key: 'youtubeKey', label: 'YouTube API Key', hint: '仅采集 YouTube 时需要；留空跳过', mask: true,  type: 'text'   },
+  { key: 'outDir',     label: '默认输出目录',                                               mask: false, type: 'dir'    },
+  { key: 'model',      label: '默认 AI 模型',                                               mask: false, type: 'select', items: MODEL_ITEMS },
 ];
 
 const STEP_LABELS = ['OpenAI', 'YouTube', '目录', '模型'];
@@ -39,6 +46,18 @@ export default function Settings({ onNav }) {
     if (key.escape) {
       if (stepIdx === 0) onNav('menu');
       else { setStepIdx(i => i - 1); setDraft(''); }
+      return;
+    }
+
+    // ← 返回上一步（text/select 步骤均支持）；→ 仅 text 步骤等效 Enter
+    if (step?.type !== 'dir') {
+      if (key.leftArrow && stepIdx > 0) {
+        setStepIdx(i => i - 1);
+        setDraft('');
+      }
+      if (key.rightArrow && step?.type === 'text') {
+        advance();
+      }
     }
   });
 
@@ -107,6 +126,26 @@ export default function Settings({ onNav }) {
             initial={values[step.key] || '.'}
             onConfirm={(path) => advance(path)}
           />
+        ) : step.type === 'select' ? (
+          <>
+            {values[step.key] && (
+              <Text color="gray" dimColor>
+                当前值：{MODEL_ITEMS.find(m => m.value === values[step.key])?.label ?? values[step.key]}
+              </Text>
+            )}
+            <SelectInput
+              items={step.items}
+              onSelect={({ value }) => advance(value)}
+              indicatorComponent={({ isSelected }) => (
+                <Box marginRight={1}>
+                  {isSelected ? <Text color="cyan" bold>{SYM.cursor}</Text> : <Text> </Text>}
+                </Box>
+              )}
+              itemComponent={({ label, isSelected }) => (
+                <Text color={isSelected ? 'white' : 'gray'}>{label}</Text>
+              )}
+            />
+          </>
         ) : (
           <>
             {values[step.key] && (
@@ -127,15 +166,13 @@ export default function Settings({ onNav }) {
         )}
       </Box>
 
-      {step.type !== 'dir' && (
-        <KeyBar hints={[
-          { key: 'Enter', label: '确认' },
-          { key: 'ESC',   label: stepIdx === 0 ? '返回菜单' : '上一步' },
-        ]} />
-      )}
-      {step.type === 'dir' && (
-        <KeyBar hints={[{ key: 'ESC', label: stepIdx === 0 ? '返回菜单' : '上一步' }]} />
-      )}
+      <KeyBar hints={
+        step.type === 'dir'
+          ? [{ key: 'ESC', label: stepIdx === 0 ? '返回菜单' : '上一步' }]
+          : step.type === 'select'
+          ? [{ key: '←', label: '上一项' }, { key: 'Enter', label: '选择' }, { key: 'ESC', label: stepIdx === 0 ? '返回菜单' : '上一步' }]
+          : [{ key: '←→', label: '切换配置项' }, { key: 'Enter', label: '确认' }, { key: 'ESC', label: stepIdx === 0 ? '返回菜单' : '上一步' }]
+      } />
     </Box>
   );
 }

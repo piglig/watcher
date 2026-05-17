@@ -16,6 +16,11 @@ const ITEMS = [
     desc:  '使用 OpenAI Batch API 对帖子进行多维度风险评分',
   },
   {
+    label: '预览采集数据',
+    value: 'preview',
+    desc:  '浏览已采集的 JSON 数据，↑↓ 选行，←→ 翻页',
+  },
+  {
     label: '查看分类任务',
     value: 'jobs',
     desc:  '查看历史批次，检索已完成的分类结果',
@@ -60,6 +65,7 @@ export default function MainMenu({ onNav }) {
     onNav(
       value === 'scrape'    ? 'scrape-setup'
     : value === 'classify'  ? 'classify-setup'
+    : value === 'preview'   ? 'data-preview'
     : value === 'jobs'      ? 'jobs'
     : value === 'settings'  ? 'settings'
     : 'menu'

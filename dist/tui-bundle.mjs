@@ -1,10 +1,10 @@
 // src/tui/main.js
-import React15 from "react";
+import React16 from "react";
 import { render } from "ink";
 
 // src/tui/App.js
-import React14, { useState as useState10 } from "react";
-import { Box as Box13, useWindowSize } from "ink";
+import React15, { useState as useState11 } from "react";
+import { Box as Box14, useWindowSize } from "ink";
 
 // src/tui/components/Header.js
 import React from "react";
@@ -95,6 +95,11 @@ var ITEMS = [
     desc: "\u4F7F\u7528 OpenAI Batch API \u5BF9\u5E16\u5B50\u8FDB\u884C\u591A\u7EF4\u5EA6\u98CE\u9669\u8BC4\u5206"
   },
   {
+    label: "\u9884\u89C8\u91C7\u96C6\u6570\u636E",
+    value: "preview",
+    desc: "\u6D4F\u89C8\u5DF2\u91C7\u96C6\u7684 JSON \u6570\u636E\uFF0C\u2191\u2193 \u9009\u884C\uFF0C\u2190\u2192 \u7FFB\u9875"
+  },
+  {
     label: "\u67E5\u770B\u5206\u7C7B\u4EFB\u52A1",
     value: "jobs",
     desc: "\u67E5\u770B\u5386\u53F2\u6279\u6B21\uFF0C\u68C0\u7D22\u5DF2\u5B8C\u6210\u7684\u5206\u7C7B\u7ED3\u679C"
@@ -125,7 +130,7 @@ function MainMenu({ onNav }) {
       return;
     }
     onNav(
-      value === "scrape" ? "scrape-setup" : value === "classify" ? "classify-setup" : value === "jobs" ? "jobs" : value === "settings" ? "settings" : "menu"
+      value === "scrape" ? "scrape-setup" : value === "classify" ? "classify-setup" : value === "preview" ? "data-preview" : value === "jobs" ? "jobs" : value === "settings" ? "settings" : "menu"
     );
   };
   useInput((_, key) => {
@@ -168,12 +173,13 @@ function MainMenu({ onNav }) {
 import React6, { useState as useState3 } from "react";
 import { Box as Box6, Text as Text6, useInput as useInput3 } from "ink";
 import TextInput2 from "ink-text-input";
+import SelectInput2 from "ink-select-input";
 
 // src/tui/components/DirPicker.js
 import React4, { useState as useState2, useEffect } from "react";
 import { Box as Box4, Text as Text4, useInput as useInput2 } from "ink";
 import TextInput from "ink-text-input";
-import { readdirSync, mkdirSync, statSync } from "fs";
+import { readdirSync, mkdirSync } from "fs";
 import { join, resolve, dirname, sep } from "path";
 import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
 var VISIBLE = 8;
@@ -198,10 +204,12 @@ function DirPicker({ initial = ".", onConfirm }) {
   const [cursor, setCursor] = useState2(0);
   const [creating, setCreating] = useState2(false);
   const [newName, setNewName] = useState2("");
+  const [revision, setRevision] = useState2(0);
   const subdirs = listDirs(currentPath);
   const atRoot = isRoot(currentPath);
   const items = [
     { id: "__confirm", label: `${SYM.check}  \u9009\u62E9\u6B64\u76EE\u5F55`, type: "confirm" },
+    { id: "__new", label: `[+] \u65B0\u5EFA\u6587\u4EF6\u5939`, type: "new-folder" },
     ...!atRoot ? [{ id: "__parent", label: `..${sep}  \u4E0A\u7EA7\u76EE\u5F55`, type: "parent" }] : [],
     ...subdirs.map((name) => ({ id: name, label: `${name}${sep}`, type: "dir", name }))
   ];
@@ -214,31 +222,30 @@ function DirPicker({ initial = ".", onConfirm }) {
     if (key.downArrow) setCursor((c) => Math.min(items.length - 1, c + 1));
     if (key.leftArrow && !atRoot) {
       setCurrentPath(dirname(currentPath));
+      return;
     }
-    if (key.rightArrow || key.return) {
+    if (key.return || key.rightArrow) {
       const item = items[cursor];
       if (!item) return;
       if (item.type === "confirm") {
         mkdirSync(currentPath, { recursive: true });
         onConfirm(currentPath);
+      } else if (item.type === "new-folder") {
+        setCreating(true);
+        setNewName("");
       } else if (item.type === "parent") {
         setCurrentPath(dirname(currentPath));
       } else if (item.type === "dir") {
         setCurrentPath(join(currentPath, item.name));
       }
     }
-    if ((input === "n" || input === "N") && !creating) {
-      setCreating(true);
-      setNewName("");
-    }
   });
   const handleCreate = () => {
     const name = newName.trim();
     if (name) {
       try {
-        const newDir = join(currentPath, name);
-        mkdirSync(newDir, { recursive: true });
-        setCurrentPath(newDir);
+        mkdirSync(join(currentPath, name), { recursive: true });
+        setRevision((r) => r + 1);
       } catch {
       }
     }
@@ -258,14 +265,14 @@ function DirPicker({ initial = ".", onConfirm }) {
       visibleItems.map((item, localIdx) => {
         const globalIdx = scrollStart + localIdx;
         const isCursor = globalIdx === cursor;
-        const color = item.type === "confirm" ? "green" : item.type === "parent" ? "gray" : "white";
+        const color = item.type === "confirm" ? "green" : item.type === "new-folder" ? "yellow" : item.type === "parent" ? "gray" : "white";
         return /* @__PURE__ */ jsxs4(Box4, { gap: 1, children: [
           /* @__PURE__ */ jsx4(Text4, { color: isCursor ? "cyan" : "gray", children: isCursor ? SYM.cursor : " " }),
           /* @__PURE__ */ jsx4(
             Text4,
             {
               color: isCursor ? color : "gray",
-              bold: isCursor && item.type === "confirm",
+              bold: isCursor && item.type !== "parent",
               dimColor: item.type === "parent" && !isCursor,
               children: item.label
             }
@@ -293,9 +300,8 @@ function DirPicker({ initial = ".", onConfirm }) {
     ] }),
     /* @__PURE__ */ jsxs4(Box4, { marginTop: 1, gap: 2, children: [
       /* @__PURE__ */ jsx4(Text4, { color: "gray", dimColor: true, children: "\u2191\u2193 \u79FB\u52A8" }),
-      /* @__PURE__ */ jsx4(Text4, { color: "gray", dimColor: true, children: "\u2190 \u4E0A\u7EA7" }),
-      /* @__PURE__ */ jsx4(Text4, { color: "gray", dimColor: true, children: "\u2192/Enter \u8FDB\u5165\xB7\u786E\u8BA4" }),
-      /* @__PURE__ */ jsx4(Text4, { color: "gray", dimColor: true, children: "N \u65B0\u5EFA\u6587\u4EF6\u5939" })
+      /* @__PURE__ */ jsx4(Text4, { color: "gray", dimColor: true, children: "\u2190 \u4E0A\u7EA7\u76EE\u5F55" }),
+      /* @__PURE__ */ jsx4(Text4, { color: "gray", dimColor: true, children: "\u2192/Enter \u8FDB\u5165\xB7\u786E\u8BA4" })
     ] })
   ] });
 }
@@ -363,11 +369,16 @@ function applyToEnv() {
 
 // src/tui/screens/Settings.js
 import { Fragment, jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
+var MODEL_ITEMS = [
+  { label: "gpt-4.1-mini  \u5FEB\u901F\u7701\u94B1\uFF08\u63A8\u8350\uFF09", value: "gpt-4.1-mini" },
+  { label: "gpt-4.1       \u9AD8\u7CBE\u5EA6", value: "gpt-4.1" },
+  { label: "gpt-4o-mini   \u5907\u7528", value: "gpt-4o-mini" }
+];
 var STEPS = [
   { key: "openaiKey", label: "OpenAI API Key", hint: "\u4EE5 sk- \u5F00\u5934\uFF1B\u7559\u7A7A\u4FDD\u6301\u73B0\u6709\u503C\u4E0D\u53D8", mask: true, type: "text" },
   { key: "youtubeKey", label: "YouTube API Key", hint: "\u4EC5\u91C7\u96C6 YouTube \u65F6\u9700\u8981\uFF1B\u7559\u7A7A\u8DF3\u8FC7", mask: true, type: "text" },
   { key: "outDir", label: "\u9ED8\u8BA4\u8F93\u51FA\u76EE\u5F55", mask: false, type: "dir" },
-  { key: "model", label: "\u9ED8\u8BA4 AI \u6A21\u578B", hint: "\u9ED8\u8BA4 gpt-4.1-mini", mask: false, type: "text" }
+  { key: "model", label: "\u9ED8\u8BA4 AI \u6A21\u578B", mask: false, type: "select", items: MODEL_ITEMS }
 ];
 var STEP_LABELS = ["OpenAI", "YouTube", "\u76EE\u5F55", "\u6A21\u578B"];
 function maskValue(val) {
@@ -391,6 +402,16 @@ function Settings({ onNav }) {
       else {
         setStepIdx((i) => i - 1);
         setDraft("");
+      }
+      return;
+    }
+    if (step?.type !== "dir") {
+      if (key.leftArrow && stepIdx > 0) {
+        setStepIdx((i) => i - 1);
+        setDraft("");
+      }
+      if (key.rightArrow && step?.type === "text") {
+        advance();
       }
     }
   });
@@ -441,7 +462,21 @@ function Settings({ onNav }) {
               initial: values[step.key] || ".",
               onConfirm: (path) => advance(path)
             }
-          ) : /* @__PURE__ */ jsxs6(Fragment, { children: [
+          ) : step.type === "select" ? /* @__PURE__ */ jsxs6(Fragment, { children: [
+            values[step.key] && /* @__PURE__ */ jsxs6(Text6, { color: "gray", dimColor: true, children: [
+              "\u5F53\u524D\u503C\uFF1A",
+              MODEL_ITEMS.find((m) => m.value === values[step.key])?.label ?? values[step.key]
+            ] }),
+            /* @__PURE__ */ jsx6(
+              SelectInput2,
+              {
+                items: step.items,
+                onSelect: ({ value }) => advance(value),
+                indicatorComponent: ({ isSelected }) => /* @__PURE__ */ jsx6(Box6, { marginRight: 1, children: isSelected ? /* @__PURE__ */ jsx6(Text6, { color: "cyan", bold: true, children: SYM.cursor }) : /* @__PURE__ */ jsx6(Text6, { children: " " }) }),
+                itemComponent: ({ label, isSelected }) => /* @__PURE__ */ jsx6(Text6, { color: isSelected ? "white" : "gray", children: label })
+              }
+            )
+          ] }) : /* @__PURE__ */ jsxs6(Fragment, { children: [
             values[step.key] && /* @__PURE__ */ jsxs6(Text6, { color: "gray", dimColor: true, children: [
               "\u5F53\u524D\u503C\uFF1A",
               step.mask ? maskValue(values[step.key]) : values[step.key]
@@ -462,11 +497,7 @@ function Settings({ onNav }) {
         ]
       }
     ),
-    step.type !== "dir" && /* @__PURE__ */ jsx6(KeyBar, { hints: [
-      { key: "Enter", label: "\u786E\u8BA4" },
-      { key: "ESC", label: stepIdx === 0 ? "\u8FD4\u56DE\u83DC\u5355" : "\u4E0A\u4E00\u6B65" }
-    ] }),
-    step.type === "dir" && /* @__PURE__ */ jsx6(KeyBar, { hints: [{ key: "ESC", label: stepIdx === 0 ? "\u8FD4\u56DE\u83DC\u5355" : "\u4E0A\u4E00\u6B65" }] })
+    /* @__PURE__ */ jsx6(KeyBar, { hints: step.type === "dir" ? [{ key: "ESC", label: stepIdx === 0 ? "\u8FD4\u56DE\u83DC\u5355" : "\u4E0A\u4E00\u6B65" }] : step.type === "select" ? [{ key: "\u2190", label: "\u4E0A\u4E00\u9879" }, { key: "Enter", label: "\u9009\u62E9" }, { key: "ESC", label: stepIdx === 0 ? "\u8FD4\u56DE\u83DC\u5355" : "\u4E0A\u4E00\u6B65" }] : [{ key: "\u2190\u2192", label: "\u5207\u6362\u914D\u7F6E\u9879" }, { key: "Enter", label: "\u786E\u8BA4" }, { key: "ESC", label: stepIdx === 0 ? "\u8FD4\u56DE\u83DC\u5355" : "\u4E0A\u4E00\u6B65" }] })
   ] });
 }
 
@@ -474,7 +505,7 @@ function Settings({ onNav }) {
 import React8, { useState as useState5, useMemo } from "react";
 import { Box as Box8, Text as Text8, useInput as useInput5 } from "ink";
 import TextInput3 from "ink-text-input";
-import SelectInput2 from "ink-select-input";
+import SelectInput3 from "ink-select-input";
 
 // src/tui/components/MultiSelect.js
 import React7, { useState as useState4 } from "react";
@@ -702,9 +733,7 @@ function attachInterceptor(page, tweetMap, state, opts = {}) {
     if (status === 429) {
       const retryAfter = parseInt(response.headers()["retry-after"] ?? "60", 10);
       state.rateLimitUntil = Date.now() + retryAfter * 1e3;
-      process.stdout.write(`
-[RATE LIMIT] Pausing ${retryAfter}s...
-`);
+      console.warn(`[WARN] Rate limit \u2014 pausing ${retryAfter}s...`);
       return;
     }
     if (debug && url.includes("/api/graphql/")) {
@@ -719,8 +748,8 @@ function attachInterceptor(page, tweetMap, state, opts = {}) {
       if (debug && !state.dumpedOnce) {
         state.dumpedOnce = true;
         const { writeFileSync: writeFileSync9 } = await import("fs");
-        const { resolve: resolve13 } = await import("path");
-        writeFileSync9(resolve13("debug_response.json"), JSON.stringify(json, null, 2), "utf-8");
+        const { resolve: resolve14 } = await import("path");
+        writeFileSync9(resolve14("debug_response.json"), JSON.stringify(json, null, 2), "utf-8");
         dbg("Raw response \u2192 debug_response.json");
       }
       const { valid, reason } = validateGraphQLResponse(json);
@@ -818,9 +847,7 @@ async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {}) {
     }
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
-      process.stdout.write(`
-  Rate limit \u2014 waiting ${Math.ceil(pause / 1e3)}s...
-`);
+      console.warn(`[WARN] Rate limit \u2014 waiting ${Math.ceil(pause / 1e3)}s...`);
       await page.waitForTimeout(pause);
     }
     const domTweets = await extractFromDOM(page);
@@ -828,7 +855,7 @@ async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {}) {
     for (const t of domTweets) {
       if (!tweetMap.has(t.id)) tweetMap.set(t.id, t);
     }
-    process.stdout.write(`\r  [${label}] ${tweetMap.size} tweets (scroll #${round})...`);
+    console.log(`[${label}] ${tweetMap.size} tweets (scroll #${round})`);
     if (shouldStop(domTweets)) {
       console.log(`
   [${label}] All tweets older than --since cutoff. Stopping early.`);
@@ -869,7 +896,6 @@ async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {}) {
       break;
     }
   }
-  process.stdout.write("\n");
 }
 
 // src/platforms/twitter/filter.js
@@ -968,8 +994,12 @@ ${"\u2550".repeat(52)}`);
     if (!tweet.author?.username || tweet.type === "retweet") {
       tweet.author = { ...tweet.author, username };
     }
+    if (tweet.url.includes("/i/web/status/") && tweet.author?.username) {
+      tweet.url = `https://x.com/${tweet.author.username}/status/${tweet.id}`;
+    }
   }
-  return Array.from(tweetMap.values()).filter(filterFn).sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, max);
+  const lc = username.toLowerCase();
+  return Array.from(tweetMap.values()).filter((t) => !t.author?.username || t.author.username.toLowerCase() === lc).filter(filterFn).sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, max);
 }
 async function scrape(usernames, opts = {}) {
   const names = (Array.isArray(usernames) ? usernames : [usernames]).map(parseUsername).filter(Boolean);
@@ -1222,7 +1252,7 @@ async function scrollForVideos(page, videoMap, { max, debug, state }) {
     } else {
       stale = 0;
     }
-    process.stdout.write(`\r  Videos collected: ${videoMap.size}...`);
+    console.log(`Videos collected: ${videoMap.size}`);
     dbg(`scroll \u2014 videos: ${videoMap.size}, stale: ${stale}, hasMore: ${state.hasMore}`);
   }
   if (state.hasMore && videoMap.size < max) await delay(2e3);
@@ -1384,13 +1414,12 @@ async function fetchCommentsParallel(context, videos, maxComments, debug) {
       const v = videos[i];
       results[i] = await fetchCommentsOnPage(page, v.id, v.author.username, maxComments, debug);
       done++;
-      process.stdout.write(`\r  Comments: ${done}/${videos.length}...`);
+      console.log(`Comments: ${done}/${videos.length}`);
     }
     await page.close().catch(() => {
     });
   };
   await Promise.all(pages.map(worker));
-  process.stdout.write("\n");
   return results;
 }
 async function scrapeTikTokUser(target, context, opts = {}) {
@@ -1444,7 +1473,6 @@ async function scrapeTikTokUser(target, context, opts = {}) {
     profile = extractUserFromSSR(ssr);
     if (profile) dbg(`profile: ${profile.nickname} \u2014 ${profile.followers} followers`);
     await scrollForVideos(page, videoMap, { max, debug, state });
-    process.stdout.write("\n");
   } finally {
     page.off("response", onResponse);
     await page.close().catch(() => {
@@ -1534,9 +1562,7 @@ async function redditFetch(path, params = {}, retries = 3) {
     });
     if (res.status === 429) {
       const wait = parseInt(res.headers.get("retry-after") ?? "60", 10) * 1e3;
-      process.stdout.write(`
-[RATE LIMIT] Waiting ${Math.ceil(wait / 1e3)}s...
-`);
+      console.warn(`[WARN] Rate limit 429 \u2014 waiting ${Math.ceil(wait / 1e3)}s...`);
       await sleep(wait);
       continue;
     }
@@ -1632,7 +1658,7 @@ async function fetchListing(path, opts = {}) {
       batch.push(item);
       if (filter(item)) items.push(item);
     }
-    process.stdout.write(`\r  [${label}] ${items.length} items (page ${page})...`);
+    console.log(`[${label}] ${items.length} items (page ${page})`);
     if (earlyStop(batch)) {
       console.log(`
   [${label}] Date cutoff reached \u2014 stopping early.`);
@@ -1643,7 +1669,6 @@ async function fetchListing(path, opts = {}) {
     if (items.length >= max) break;
     await sleep(DELAY_MS);
   }
-  process.stdout.write("\n");
   return items.slice(0, max);
 }
 async function fetchSubreddit(subreddit, opts = {}) {
@@ -1781,16 +1806,12 @@ async function arcticFetch(path, params = {}, retries = 3) {
     const remaining = parseInt(res.headers.get("x-ratelimit-remaining") ?? "999", 10);
     if (remaining < 20) {
       const reset = parseInt(res.headers.get("x-ratelimit-reset") ?? "10", 10);
-      process.stdout.write(`
-[RATE LIMIT] ${remaining} requests left \u2014 waiting ${reset}s...
-`);
+      console.warn(`[WARN] Rate limit \u2014 ${remaining} requests left, waiting ${reset}s...`);
       await sleep2(reset * 1e3);
     }
     if (res.status === 429) {
       const wait = parseInt(res.headers.get("retry-after") ?? "60", 10) * 1e3;
-      process.stdout.write(`
-[RATE LIMIT 429] Waiting ${Math.ceil(wait / 1e3)}s...
-`);
+      console.warn(`[WARN] Rate limit 429 \u2014 waiting ${Math.ceil(wait / 1e3)}s...`);
       await sleep2(wait);
       continue;
     }
@@ -1887,14 +1908,13 @@ async function fetchListing2(path, opts = {}) {
       const item = parse(raw);
       if (item && filter(item)) items.push(item);
     }
-    process.stdout.write(`\r  [${label}] ${items.length} items (page ${page})...`);
+    console.log(`[${label}] ${items.length} items (page ${page})`);
     const lastTs = batch[batch.length - 1].created_utc ?? batch[batch.length - 1].created;
     if (!lastTs) break;
     cursor = lastTs - 1;
     if (fixedAfter && cursor <= fixedAfter) break;
     await sleep2(DELAY_MS2);
   }
-  process.stdout.write("\n");
   return items.slice(0, max);
 }
 async function fetchSubredditArctic(subreddit, opts = {}) {
@@ -2019,17 +2039,17 @@ async function isLoggedInThreads(page) {
 }
 async function waitForThreadsLogin(page) {
   console.log("\nNot logged in. Please log in to Threads in the browser window.");
-  console.log("\u9239\u20AC".repeat(50));
-  console.log("  After login completes \u922B?press Enter here to confirm");
-  console.log("\u9239\u20AC".repeat(50));
-  return new Promise((resolve13) => {
+  console.log("\u2500".repeat(50));
+  console.log("  After login completes \u2192press Enter here to confirm");
+  console.log("\u2500".repeat(50));
+  return new Promise((resolve14) => {
     let done = false;
     const finish = (result) => {
       if (done) return;
       done = true;
       clearInterval(poll);
       clearTimeout(timer);
-      resolve13(result);
+      resolve14(result);
     };
     const poll = setInterval(async () => {
       if (done) return;
@@ -2041,7 +2061,7 @@ async function waitForThreadsLogin(page) {
       if (done) return;
       const ok = await isLoggedInThreads(page);
       if (!ok) {
-        console.log("\n  Not logged in yet \u9225?still waiting (press Enter again after login)...");
+        console.log("\n  Not logged in yet \u2014still waiting (press Enter again after login)...");
         const rl2 = createInterface3({ input: process.stdin, output: process.stdout });
         rl2.question("", async () => {
           rl2.close();
@@ -2137,7 +2157,7 @@ function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
     const status = response.status();
     if (status === 429) {
       state.rateLimitUntil = Date.now() + 6e4;
-      process.stdout.write("\n[RATE LIMIT] Pausing 60s...\n");
+      console.warn("[WARN] Rate limit 429 \u2014 pausing 60s...");
       return;
     }
     if (debug && (url.includes("threads.com") || url.includes("threads.net") || url.includes("instagram.com"))) {
@@ -2154,11 +2174,11 @@ function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
       if (debug && !state.dumpedOnce) {
         state.dumpedOnce = true;
         writeFileSync3(resolve4("debug_threads_response.json"), JSON.stringify(json, null, 2), "utf-8");
-        dbg(`Raw response dumped \u922B?debug_threads_response.json  (url: ${url.slice(0, 80)})`);
+        dbg(`Raw response dumped \u2192debug_threads_response.json  (url: ${url.slice(0, 80)})`);
       }
       const found = [];
       findPostsInObj(json, found);
-      dbg(`XHR parsed \u922B?${found.length} threads  (url: ${url.slice(0, 80)})`);
+      dbg(`XHR parsed \u2192${found.length} threads  (url: ${url.slice(0, 80)})`);
       for (const t of found) {
         if (!threadMap.has(t.id)) threadMap.set(t.id, t);
       }
@@ -2178,12 +2198,10 @@ async function scrollPage(page, threadMap, state, opts = {}) {
     round++;
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
-      process.stdout.write(`
-  Rate limit \u9225?waiting ${Math.ceil(pause / 1e3)}s...
-`);
+      console.warn(`[WARN] Rate limit \u2014 waiting ${Math.ceil(pause / 1e3)}s...`);
       await page.waitForTimeout(pause);
     }
-    process.stdout.write(`\r  ${threadMap.size} threads (scroll #${round})...`);
+    console.log(`Threads: ${threadMap.size} collected (scroll #${round})`);
     for (let i = 0; i < 15; i++) {
       await page.mouse.wheel(0, 600);
       await page.waitForTimeout(100);
@@ -2209,7 +2227,6 @@ async function scrollPage(page, threadMap, state, opts = {}) {
       prevCount = threadMap.size;
     }
   }
-  process.stdout.write("\n");
 }
 function buildFilter3(opts = {}) {
   const since = opts.since ? new Date(opts.since) : null;
@@ -2379,17 +2396,17 @@ async function isLoggedInPixiv(page) {
 }
 async function waitForPixivLogin(page) {
   console.log("\nNot logged in. Please log in to Pixiv in the browser window.");
-  console.log("\u9239\u20AC".repeat(50));
-  console.log("  After login completes \u922B?press Enter here to confirm");
-  console.log("\u9239\u20AC".repeat(50));
-  return new Promise((resolve13) => {
+  console.log("\u2500".repeat(50));
+  console.log("  After login completes \u2192press Enter here to confirm");
+  console.log("\u2500".repeat(50));
+  return new Promise((resolve14) => {
     let done = false;
     const finish = (result) => {
       if (done) return;
       done = true;
       clearInterval(poll);
       clearTimeout(timer);
-      resolve13(result);
+      resolve14(result);
     };
     const poll = setInterval(async () => {
       if (done) return;
@@ -2401,7 +2418,7 @@ async function waitForPixivLogin(page) {
       if (done) return;
       const ok = await isLoggedInPixiv(page);
       if (!ok) {
-        console.log("\n  Not logged in yet \u9225?still waiting (press Enter again after login)...");
+        console.log("\n  Not logged in yet \u2014still waiting (press Enter again after login)...");
         const rl2 = createInterface4({ input: process.stdin, output: process.stdout });
         rl2.question("", async () => {
           rl2.close();
@@ -2504,7 +2521,7 @@ ${"\u2550".repeat(52)}`);
   const limit = Math.min(allIds.length, max);
   for (let i = 0; i < limit; i += BATCH_SIZE) {
     const batch = allIds.slice(i, Math.min(i + BATCH_SIZE, limit));
-    process.stdout.write(`\r  Fetching ${Math.min(i + batch.length, limit)}/${limit}...`);
+    console.log(`Fetching artworks: ${Math.min(i + batch.length, limit)}/${limit}`);
     const works = await page.evaluate(async (ids) => {
       const settled = await Promise.allSettled(
         ids.map(
@@ -2519,7 +2536,6 @@ ${"\u2550".repeat(52)}`);
     }
     if (i + BATCH_SIZE < limit) await delay2(BATCH_DELAY);
   }
-  process.stdout.write("\n");
   return artworks.filter(buildFilter4(filterOpts)).sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, max);
 }
 async function scrapePixiv(targets, opts = {}) {
@@ -2716,9 +2732,8 @@ async function fetchArticleDetails(cafeId, idEntries, likeMap, dbg) {
       if (r.status === "fulfilled" && r.value) results.push(r.value);
     }
     if (i + BATCH_SIZE2 < idEntries.length) await delay3(BATCH_DELAY2);
-    process.stdout.write(`\r  Fetching details: ${Math.min(i + BATCH_SIZE2, idEntries.length)}/${idEntries.length}...`);
+    console.log(`Fetching details: ${Math.min(i + BATCH_SIZE2, idEntries.length)}/${idEntries.length}`);
   }
-  process.stdout.write("\n");
   return results;
 }
 function decodeHtmlEntities(str) {
@@ -2846,9 +2861,7 @@ async function scrapeNaverCafe(target, page, opts = {}) {
         const prevSize = idSet.size;
         const iframePath = `/ArticleList.nhn?search.clubid=${clubId}&search.menuid=${board.id}&search.page=${pageNum}&userDisplay=${PAGE_SIZE}&search.boardtype=L`;
         const listUrl = `https://cafe.naver.com/${target.slug}?iframe_url=${encodeURIComponent(iframePath)}`;
-        process.stdout.write(
-          `\r  Board "${board.name}" \u2014 page ${pageNum} (${idSet.size} IDs)...`
-        );
+        console.log(`Board "${board.name}" \u2014 page ${pageNum} (${idSet.size} IDs)`);
         await page.goto(listUrl, { waitUntil: "domcontentloaded", timeout: 3e4 });
         await delay3(NAV_DELAY2);
         const added = idSet.size - prevSize;
@@ -2863,7 +2876,6 @@ async function scrapeNaverCafe(target, page, opts = {}) {
         await delay3(300);
       }
     }
-    process.stdout.write("\n");
   } finally {
     page.off("response", onResponse);
   }
@@ -3078,8 +3090,8 @@ async function fetchTranscript(videoId, langs = "ja,en") {
     for (const lang of langs.split(",")) {
       const vttPath = `${outTemplate}.${lang}.vtt`;
       if (existsSync6(vttPath)) {
-        const { readFileSync: readFileSync6 } = await import("fs");
-        const raw = readFileSync6(vttPath, "utf-8");
+        const { readFileSync: readFileSync7 } = await import("fs");
+        const raw = readFileSync7(vttPath, "utf-8");
         unlinkSync(vttPath);
         return cleanVtt(raw);
       }
@@ -3120,24 +3132,21 @@ async function scrapeYouTubeChannel(target, apiKey, opts = {}) {
   const profile = await fetchChannel(yt, target);
   dbg(`channel: ${profile.title} \u2014 ${profile.subscribers} subscribers`);
   if (!profile.uploads_playlist) throw new Error("No uploads playlist found.");
-  process.stdout.write("  Fetching video list...");
+  console.log("Fetching video list...");
   const videoIds = await fetchVideoIds(yt, profile.uploads_playlist, max);
-  process.stdout.write(` ${videoIds.length} found
-`);
-  process.stdout.write("  Fetching video details...");
+  console.log(`${videoIds.length} videos found`);
+  console.log("Fetching video details...");
   let videos = await fetchVideoDetails(yt, videoIds);
-  process.stdout.write(` done
-`);
+  console.log("Video details done");
   videos = videos.filter(filterFn).sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, max);
   if (transcript && videos.length > 0) {
     console.log(`  Fetching transcripts for ${videos.length} videos...`);
     for (let i = 0; i < videos.length; i++) {
       const v = videos[i];
       v.transcript = await fetchTranscript(v.id, transcriptLangs);
-      process.stdout.write(`\r  Transcripts: ${i + 1}/${videos.length}...`);
+      console.log(`Transcripts: ${i + 1}/${videos.length}`);
       dbg(`${v.id}: transcript ${v.transcript ? v.transcript.length + " chars" : "empty"}`);
     }
-    process.stdout.write("\n");
   }
   return { profile, videos };
 }
@@ -3229,8 +3238,11 @@ var PLATFORMS = [
 function parseTargets(raw) {
   return raw.split(",").map((t) => t.trim()).filter(Boolean);
 }
-function datestamp() {
-  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+function sessionStamp() {
+  const d = /* @__PURE__ */ new Date();
+  const date = d.toISOString().slice(0, 10);
+  const time = d.toTimeString().slice(0, 8).replace(/:/g, "");
+  return `${date}_${time}`;
 }
 async function runScrape(config) {
   if (Array.isArray(config)) {
@@ -3262,12 +3274,14 @@ async function runScrape(config) {
     headed: !!headed,
     debug: false
   };
-  mkdirSync7(resolve8(outDir), { recursive: true });
-  const ts = datestamp();
+  const baseDir = resolve8(outDir);
+  const platformDir = join5(baseDir, platform);
+  mkdirSync7(platformDir, { recursive: true });
+  const stamp = sessionStamp();
   const savedFiles = [];
   let totalCount = 0;
   const save2 = (name, content, count, label) => {
-    const file = join5(resolve8(outDir), name);
+    const file = join5(platformDir, name);
     writeFileSync5(file, content);
     savedFiles.push({ file, count, label });
     totalCount += count;
@@ -3277,14 +3291,14 @@ async function runScrape(config) {
     for (const [username, tweets] of Object.entries(results)) {
       if (!tweets.length) continue;
       const profile = tweets[0]?.author ? { ...tweets[0].author, platform: "twitter" } : null;
-      save2(`twitter_${username}_${ts}.json`, toJSON(profile, tweets), tweets.length, `@${username}`);
+      save2(`${stamp}_${username}.json`, toJSON(profile, tweets), tweets.length, `@${username}`);
     }
   } else if (platform === "tiktok") {
     const parsed = targets.map((t) => parseTikTokUser(t) ?? t);
     const results = await scrapeTikTok(parsed, opts);
     for (const [username, { profile, videos }] of Object.entries(results)) {
       if (!videos.length) continue;
-      save2(`tiktok_${username}_${ts}.json`, toTikTokJSON(profile, videos), videos.length, `@${username}`);
+      save2(`${stamp}_${username}.json`, toTikTokJSON(profile, videos), videos.length, `@${username}`);
     }
   } else if (platform === "reddit") {
     const fn = redditSource === "reddit" ? scrapeReddit : scrapeArctic;
@@ -3292,26 +3306,26 @@ async function runScrape(config) {
     for (const [target, items] of Object.entries(results)) {
       if (!items.length) continue;
       const safeName = target.replace(/\//g, "_");
-      save2(`reddit_${safeName}_${ts}.json`, toRedditJSON(items), items.length, target);
+      save2(`${stamp}_${safeName}.json`, toRedditJSON(items), items.length, target);
     }
   } else if (platform === "threads") {
     const results = await scrapeThreads(targets, opts);
     for (const [username, threads] of Object.entries(results)) {
       if (!threads.length) continue;
-      save2(`threads_${username}_${ts}.json`, toThreadsJSON(threads), threads.length, `@${username}`);
+      save2(`${stamp}_${username}.json`, toThreadsJSON(threads), threads.length, `@${username}`);
     }
   } else if (platform === "pixiv") {
     const results = await scrapePixiv(targets, opts);
     for (const [target, { artworks }] of Object.entries(results)) {
       if (!artworks.length) continue;
-      save2(`pixiv_${target}_${ts}.json`, toPixivJSON(artworks), artworks.length, `Pixiv:${target}`);
+      save2(`${stamp}_${target}.json`, toPixivJSON(artworks), artworks.length, `Pixiv:${target}`);
     }
   } else if (platform === "naver") {
     const results = await scrapeNaver(targets, opts);
     for (const [url, { cafe, posts }] of Object.entries(results)) {
       if (!posts.length) continue;
       const name = (cafe?.name ?? url).replace(/[^a-z0-9_\-]/gi, "_");
-      save2(`naver_${name}_${ts}.json`, toNaverJSON(posts, cafe?.memberCount), posts.length, name);
+      save2(`${stamp}_${name}.json`, toNaverJSON(posts, cafe?.memberCount), posts.length, name);
     }
   } else if (platform === "youtube") {
     const ytKey = apiKey || process.env.YOUTUBE_API_KEY;
@@ -3319,7 +3333,7 @@ async function runScrape(config) {
     for (const [target, { profile, videos }] of Object.entries(results)) {
       if (!videos.length) continue;
       const name = (profile?.handle ?? target).replace(/[@/]/g, "");
-      save2(`youtube_${name}_${ts}.json`, toYouTubeJSON(profile, videos), videos.length, profile?.title ?? target);
+      save2(`${stamp}_${name}.json`, toYouTubeJSON(profile, videos), videos.length, profile?.title ?? target);
     }
   }
   return { savedFiles, totalCount };
@@ -3399,9 +3413,6 @@ function buildSteps(platforms) {
       ]
     });
   }
-  if (!getConfig().outDir) {
-    steps.push({ key: "outDir", short: "\u76EE\u5F55", label: "\u8F93\u51FA\u76EE\u5F55", type: "text", hint: "\u9ED8\u8BA4 ./out/" });
-  }
   return steps;
 }
 function Indicator2({ isSelected }) {
@@ -3441,13 +3452,13 @@ function ScrapeSetup({ onNav }) {
     setConfig2(next);
     const currentSteps = buildSteps(selectedPlatforms);
     if (stepIdx + 1 >= currentSteps.length) {
-      const savedOutDir = getConfig().outDir;
+      const outDir = getConfig().outDir || "./out/";
       const shared = {
         max: next.max || "200",
         since: next.since || "",
         until: next.until || "",
         headed: next.headed === "true",
-        outDir: next.outDir || savedOutDir || "./out/",
+        outDir,
         redditSource: next.redditSource || "arctic",
         apiKey: next.youtubeKey || process.env.YOUTUBE_API_KEY
       };
@@ -3505,7 +3516,7 @@ function ScrapeSetup({ onNav }) {
           step.hint && step.hint.split("\n").map((h, i) => /* @__PURE__ */ jsx8(Text8, { color: "gray", dimColor: true, children: h }, i)),
           step.type === "multi-select" && /* @__PURE__ */ jsx8(MultiSelect, { items: PLATFORM_ITEMS, onConfirm: handlePlatformConfirm }),
           step.type === "select" && /* @__PURE__ */ jsx8(
-            SelectInput2,
+            SelectInput3,
             {
               items: step.items,
               onSelect: ({ value }) => advance(value),
@@ -3567,7 +3578,7 @@ function useElapsed(active) {
   }, [active]);
   return secs;
 }
-var RECENT_LINES = 3;
+var RECENT_LINES = 5;
 function ScrapeRun({ config, onNav }) {
   const [recentLogs, setRecentLogs] = useState6([]);
   const [status, setStatus] = useState6("running");
@@ -3592,6 +3603,9 @@ function ScrapeRun({ config, onNav }) {
           wait: false
         }
       });
+    }
+    if ((input === "p" || input === "P") && status === "done" && result?.savedFiles?.length) {
+      onNav("data-preview", { previewFile: result.savedFiles[0].file });
     }
   });
   useEffect2(() => {
@@ -3688,7 +3702,10 @@ function ScrapeRun({ config, onNav }) {
       }
     ),
     status !== "running" && /* @__PURE__ */ jsx9(KeyBar, { hints: [
-      ...status === "done" ? [{ key: "Enter", label: "\u7EE7\u7EED AI \u5206\u7C7B" }] : [],
+      ...status === "done" ? [
+        { key: "Enter", label: "\u7EE7\u7EED AI \u5206\u7C7B" },
+        { key: "P", label: "\u9884\u89C8\u6570\u636E" }
+      ] : [],
       { key: "ESC", label: "\u8FD4\u56DE\u4E3B\u83DC\u5355" }
     ] })
   ] });
@@ -3697,36 +3714,44 @@ function ScrapeRun({ config, onNav }) {
 // src/tui/screens/ClassifySetup.js
 import React10, { useState as useState7, useMemo as useMemo2 } from "react";
 import { Box as Box10, Text as Text10, useInput as useInput7 } from "ink";
-import TextInput4 from "ink-text-input";
-import SelectInput3 from "ink-select-input";
+import SelectInput4 from "ink-select-input";
 import { readdirSync as readdirSync2, existsSync as existsSync8 } from "fs";
-import { resolve as resolve10, join as join6 } from "path";
-import { jsx as jsx10, jsxs as jsxs10 } from "react/jsx-runtime";
-var MODEL_ITEMS = [
+import { resolve as resolve10, join as join6, relative } from "path";
+import { Fragment as Fragment2, jsx as jsx10, jsxs as jsxs10 } from "react/jsx-runtime";
+var MODEL_ITEMS2 = [
   { label: "gpt-4.1-mini  \u5FEB\u901F\u7701\u94B1\uFF08\u63A8\u8350\uFF09", value: "gpt-4.1-mini" },
   { label: "gpt-4.1       \u9AD8\u7CBE\u5EA6", value: "gpt-4.1" },
   { label: "gpt-4o-mini   \u5907\u7528", value: "gpt-4o-mini" }
 ];
-function scanJsonFiles(dir) {
+var STEPS2 = [
+  { key: "inputFile", short: "\u6587\u4EF6", label: "\u9009\u62E9\u6587\u4EF6", type: "multi-files" },
+  { key: "model", short: "\u6A21\u578B", label: "\u6A21\u578B", type: "select", items: MODEL_ITEMS2 }
+];
+function scanJsonFilesRecursive(dir) {
+  const results = [];
   try {
+    let walk = function(d) {
+      let entries;
+      try {
+        entries = readdirSync2(d, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (e.isDirectory()) {
+          if (e.name !== "classified") walk(join6(d, e.name));
+        } else if (e.name.endsWith(".json")) {
+          const full = join6(d, e.name);
+          results.push({ label: relative(abs, full), value: full });
+        }
+      }
+    };
     const abs = resolve10(dir);
     if (!existsSync8(abs)) return [];
-    return readdirSync2(abs).filter((f) => f.endsWith(".json")).map((f) => ({ label: f, value: join6(abs, f) }));
+    walk(abs);
   } catch {
-    return [];
   }
-}
-function buildSteps2() {
-  const saved = getConfig();
-  const steps = [
-    { key: "inputDir", short: "\u8F93\u5165", label: "\u8F93\u5165\u76EE\u5F55", type: "text", hint: `\u9ED8\u8BA4 ${saved.outDir || "./out/"}` },
-    { key: "inputFile", short: "\u6587\u4EF6", label: "\u9009\u62E9\u6587\u4EF6", type: "files" },
-    { key: "model", short: "\u6A21\u578B", label: "\u6A21\u578B", type: "select", items: MODEL_ITEMS }
-  ];
-  if (!saved.outDir) {
-    steps.push({ key: "outDir", short: "\u8F93\u51FA", label: "\u8F93\u51FA\u76EE\u5F55", type: "text", hint: "\u9ED8\u8BA4 ./out/" });
-  }
-  return steps;
+  return results.sort((a, b) => b.label.localeCompare(a.label));
 }
 function Indicator3({ isSelected }) {
   return /* @__PURE__ */ jsx10(Box10, { marginRight: 1, children: isSelected ? /* @__PURE__ */ jsx10(Text10, { color: "cyan", bold: true, children: SYM.cursor }) : /* @__PURE__ */ jsx10(Text10, { children: " " }) });
@@ -3735,18 +3760,14 @@ function Item3({ label, isSelected }) {
   return /* @__PURE__ */ jsx10(Text10, { color: isSelected ? "white" : "gray", children: label });
 }
 function ClassifySetup({ onNav }) {
-  const steps = useMemo2(buildSteps2, []);
-  const [config, setConfig2] = useState7({ inputDir: "" });
+  const [config, setConfig2] = useState7({});
   const [stepIdx, setStepIdx] = useState7(0);
   const [draft, setDraft] = useState7("");
-  const step = steps[stepIdx];
-  const stepLabels = steps.map((s) => s.short);
-  const fileItems = useMemo2(() => {
-    const saved = getConfig();
-    const dir = config.inputDir || saved.outDir || "./out/";
-    const files = scanJsonFiles(dir);
-    return [{ label: "\uFF08\u5168\u9009\u76EE\u5F55\u4E2D\u6240\u6709\u6587\u4EF6\uFF09", value: "" }, ...files];
-  }, [config.inputDir]);
+  const step = STEPS2[stepIdx];
+  const stepLabels = STEPS2.map((s) => s.short);
+  const saved = getConfig();
+  const scanDir = saved.outDir || "./out/";
+  const fileItems = useMemo2(() => scanJsonFilesRecursive(scanDir), [scanDir]);
   useInput7((_, key) => {
     if (key.escape) {
       if (stepIdx === 0) onNav("menu");
@@ -3757,20 +3778,19 @@ function ClassifySetup({ onNav }) {
     }
   });
   const advance = (value) => {
-    const val = (value ?? draft).trim();
+    const isMulti = step.type === "multi-files";
+    const val = isMulti ? value : (value ?? draft).trim();
     const next = { ...config, [step.key]: val };
     setConfig2(next);
-    if (stepIdx + 1 >= steps.length) {
-      const saved = getConfig();
-      const inputDir = next.inputDir || saved.outDir || "./out/";
-      const outDir = next.outDir || saved.outDir || "./out/";
+    if (stepIdx + 1 >= STEPS2.length) {
       const model = next.model || saved.model || "gpt-4.1-mini";
+      const outDir = scanDir;
       let inputFiles;
-      if (next.inputFile) {
-        inputFiles = [next.inputFile];
+      const selected = next.inputFile;
+      if (Array.isArray(selected) && selected.length > 0) {
+        inputFiles = selected;
       } else {
-        const dir = resolve10(inputDir);
-        inputFiles = existsSync8(dir) ? readdirSync2(dir).filter((f) => f.endsWith(".json")).map((f) => join6(dir, f)) : [];
+        inputFiles = fileItems.map((f) => f.value);
       }
       onNav("classify-run", { classifyConfig: { inputFiles, model, outDir, wait: false } });
     } else {
@@ -3779,7 +3799,7 @@ function ClassifySetup({ onNav }) {
     }
   };
   if (!step) return null;
-  const doneSteps = steps.slice(0, stepIdx);
+  const doneSteps = STEPS2.slice(0, stepIdx);
   return /* @__PURE__ */ jsxs10(Box10, { flexDirection: "column", paddingX: 2, paddingY: 1, gap: 1, children: [
     /* @__PURE__ */ jsx10(Text10, { bold: true, color: "cyan", children: "AI \u5206\u7C7B\u8BBE\u7F6E" }),
     /* @__PURE__ */ jsx10(StepBar, { steps: stepLabels, current: stepIdx }),
@@ -3795,7 +3815,7 @@ function ClassifySetup({ onNav }) {
         children: doneSteps.map((s) => /* @__PURE__ */ jsxs10(Box10, { gap: 2, children: [
           /* @__PURE__ */ jsx10(Text10, { color: "green", children: SYM.check }),
           /* @__PURE__ */ jsx10(Text10, { color: "gray", dimColor: true, children: s.label.padEnd(6) }),
-          /* @__PURE__ */ jsx10(Text10, { color: "white", children: config[s.key] || "\uFF08\u9ED8\u8BA4\uFF09" })
+          /* @__PURE__ */ jsx10(Text10, { color: "white", children: s.key === "inputFile" ? Array.isArray(config[s.key]) && config[s.key].length > 0 ? `\u5DF2\u9009 ${config[s.key].length} \u4E2A\u6587\u4EF6` : "\u5168\u90E8\u6587\u4EF6" : config[s.key] || "\uFF08\u9ED8\u8BA4\uFF09" })
         ] }, s.key))
       }
     ),
@@ -3811,27 +3831,26 @@ function ClassifySetup({ onNav }) {
         gap: 1,
         children: [
           /* @__PURE__ */ jsx10(Text10, { bold: true, color: "cyan", children: step.label }),
-          step.hint && /* @__PURE__ */ jsx10(Text10, { color: "gray", dimColor: true, children: step.hint }),
-          step.type === "select" || step.type === "files" ? /* @__PURE__ */ jsx10(
-            SelectInput3,
+          /* @__PURE__ */ jsxs10(Text10, { color: "gray", dimColor: true, children: [
+            "\u76EE\u5F55\uFF1A",
+            scanDir
+          ] }),
+          step.type === "multi-files" ? fileItems.length === 0 ? /* @__PURE__ */ jsx10(Text10, { color: "gray", dimColor: true, children: "\u76EE\u5F55\u4E2D\u6682\u65E0 .json \u6587\u4EF6" }) : /* @__PURE__ */ jsxs10(Fragment2, { children: [
+            /* @__PURE__ */ jsxs10(Text10, { color: "gray", dimColor: true, children: [
+              "\u4E0D\u9009\u4EFB\u4F55\u6587\u4EF6 = \u5168\u9009\u76EE\u5F55\u4E2D\u6240\u6709\u6587\u4EF6\uFF08\u5171 ",
+              fileItems.length,
+              " \u4E2A\uFF09"
+            ] }),
+            /* @__PURE__ */ jsx10(MultiSelect, { items: fileItems, onConfirm: (vals) => advance(vals) })
+          ] }) : /* @__PURE__ */ jsx10(
+            SelectInput4,
             {
-              items: step.type === "files" ? fileItems : step.items,
+              items: step.items,
               onSelect: ({ value }) => advance(value),
               indicatorComponent: Indicator3,
               itemComponent: Item3
             }
-          ) : /* @__PURE__ */ jsxs10(Box10, { gap: 1, children: [
-            /* @__PURE__ */ jsx10(Text10, { color: "cyan", children: SYM.cursor }),
-            /* @__PURE__ */ jsx10(
-              TextInput4,
-              {
-                value: draft,
-                onChange: setDraft,
-                onSubmit: () => advance(),
-                placeholder: step.hint ?? ""
-              }
-            )
-          ] })
+          )
         ]
       }
     ),
@@ -4585,6 +4604,12 @@ function listBatches() {
 }
 
 // src/tui/classify-runner.js
+function sessionStamp2() {
+  const d = /* @__PURE__ */ new Date();
+  const date = d.toISOString().slice(0, 10);
+  const time = d.toTimeString().slice(0, 8).replace(/:/g, "");
+  return `${date}_${time}`;
+}
 async function runClassify(config, onLog = () => {
 }) {
   const {
@@ -4596,7 +4621,8 @@ async function runClassify(config, onLog = () => {
     apiKey = process.env.OPENAI_API_KEY
   } = config;
   if (!apiKey) throw new Error("OPENAI_API_KEY \u672A\u8BBE\u7F6E\u3002\u8BF7\u8BBE\u7F6E\u73AF\u5883\u53D8\u91CF $env:OPENAI_API_KEY\u3002");
-  mkdirSync9(resolve12(outDir), { recursive: true });
+  const classifiedDir = join8(resolve12(outDir), "classified");
+  mkdirSync9(classifiedDir, { recursive: true });
   let allPosts = [];
   if (inputFiles.length) {
     const dataArray = inputFiles.map((f) => {
@@ -4645,7 +4671,7 @@ async function runClassify(config, onLog = () => {
       model,
       post_count: llmPosts.length,
       input_files: inputFiles,
-      out: resolve12(outDir)
+      out: classifiedDir
     });
     if (!wait) {
       return { batchId: newId, status: "submitted", postCount: llmPosts.length };
@@ -4672,8 +4698,8 @@ async function runClassify(config, onLog = () => {
   }
   const allResults = { ...ruleResults, ...llmResults };
   const userRisk = aggregateUserRisk(allPosts, allResults);
-  const ts = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const base = join8(resolve12(outDir), `classify_${ts}`);
+  const stamp = sessionStamp2();
+  const base = join8(classifiedDir, stamp);
   const savedFiles = [];
   const jsonPath = `${base}.json`;
   writeFileSync8(jsonPath, toClassifierJSON(userRisk, allPosts, allResults));
@@ -4684,7 +4710,7 @@ async function runClassify(config, onLog = () => {
   const flagPath = `${base}_flagged.csv`;
   writeFileSync8(flagPath, toFlaggedPostsCSV(userRisk));
   savedFiles.push({ file: flagPath, label: "\u6807\u8BB0\u5185\u5BB9 (CSV)" });
-  onLog(`\u8F93\u51FA\u5DF2\u5199\u5165 ${outDir}`);
+  onLog(`\u8F93\u51FA\u5DF2\u5199\u5165 ${classifiedDir}`);
   return {
     batchId: resolvedBatchId ?? null,
     status: "completed",
@@ -4724,7 +4750,7 @@ function useElapsed2(active) {
   }, [active]);
   return secs;
 }
-var RECENT_LINES2 = 3;
+var RECENT_LINES2 = 5;
 function ClassifyRun({ config, onNav }) {
   const [recentLogs, setRecentLogs] = useState8([]);
   const [status, setStatus] = useState8("running");
@@ -4856,7 +4882,7 @@ function ClassifyRun({ config, onNav }) {
 // src/tui/screens/JobsList.js
 import React13, { useState as useState9 } from "react";
 import { Box as Box12, Text as Text13, useInput as useInput9 } from "ink";
-import SelectInput4 from "ink-select-input";
+import SelectInput5 from "ink-select-input";
 import { jsx as jsx12, jsxs as jsxs13 } from "react/jsx-runtime";
 function fmtAge(iso) {
   const h = Math.round((Date.now() - new Date(iso)) / 36e5);
@@ -4938,7 +4964,7 @@ function JobsList({ onNav }) {
     pendingBatches.length > 0 ? /* @__PURE__ */ jsxs13(Box12, { flexDirection: "column", gap: 0, children: [
       /* @__PURE__ */ jsx12(Text13, { bold: true, color: "cyan", children: "\u68C0\u7D22\u7B49\u5F85\u4E2D\u7684\u6279\u6B21" }),
       /* @__PURE__ */ jsx12(
-        SelectInput4,
+        SelectInput5,
         {
           items: pendingBatches.map((b) => ({
             label: `${b.id.slice(-12)}  ${b.post_count} \u6761  ${fmtAge(b.created_at)}`,
@@ -4966,8 +4992,286 @@ function JobsList({ onNav }) {
   ] });
 }
 
-// src/tui/App.js
+// src/tui/screens/DataPreview.js
+import React14, { useState as useState10, useMemo as useMemo3, useEffect as useEffect4 } from "react";
+import { Box as Box13, Text as Text14, useInput as useInput10 } from "ink";
+import SelectInput6 from "ink-select-input";
+import { readdirSync as readdirSync3, readFileSync as readFileSync6, existsSync as existsSync10 } from "fs";
+import { resolve as resolve13, join as join9, relative as relative2, basename as basename2 } from "path";
 import { jsx as jsx13, jsxs as jsxs14 } from "react/jsx-runtime";
+var PAGE_SIZE2 = 10;
+function extractRecords(data) {
+  if (Array.isArray(data)) return data;
+  const arr = data.tweets ?? data.videos ?? data.posts ?? data.items ?? data.results ?? data.artworks;
+  if (Array.isArray(arr)) return arr;
+  return [data];
+}
+function flattenRecord(rec) {
+  const flat = {};
+  for (const [k, v] of Object.entries(rec)) {
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k2, v2] of Object.entries(v)) {
+        if (typeof v2 !== "object") flat[`${k}.${k2}`] = v2;
+      }
+    } else {
+      flat[k] = v;
+    }
+  }
+  return flat;
+}
+var FIELD_PRIORITY = [
+  ["author.username", "username", "user", "screen_name", "name", "author.name"],
+  ["text", "content", "body", "title", "full_text", "selftext"],
+  ["created_at", "date", "time", "timestamp", "created", "publishedAt"],
+  ["platform", "source", "type", "lang"],
+  [
+    "metrics.like_count",
+    "likes",
+    "retweet_count",
+    "score",
+    "hearts",
+    "digg_count",
+    "metrics.retweet_count",
+    "metrics.reply_count"
+  ]
+];
+function detectColumns(records) {
+  if (!records.length) return [];
+  const flat = flattenRecord(records[0]);
+  const keys = Object.keys(flat);
+  const cols = [];
+  for (const group of FIELD_PRIORITY) {
+    const found = group.find((g) => keys.find((k) => k.toLowerCase() === g.toLowerCase()));
+    if (found) {
+      const actual = keys.find((k) => k.toLowerCase() === found.toLowerCase());
+      if (actual && !cols.includes(actual)) cols.push(actual);
+    }
+  }
+  for (const k of keys) {
+    if (cols.length >= 6) break;
+    if (!cols.includes(k)) {
+      const sample = flat[k];
+      if (sample != null && typeof sample !== "object") cols.push(k);
+    }
+  }
+  return cols;
+}
+function cellValue(rec, col) {
+  const parts = col.split(".");
+  let val = rec;
+  for (const p of parts) {
+    if (val == null || typeof val !== "object") {
+      val = void 0;
+      break;
+    }
+    val = val[p];
+  }
+  if (val == null) return "";
+  if (typeof val === "object") return JSON.stringify(val).slice(0, 40);
+  return String(val);
+}
+function truncate(str, max) {
+  if (str.length <= max) return str;
+  return str.slice(0, max - 1) + "\u2026";
+}
+function Indicator5({ isSelected }) {
+  return /* @__PURE__ */ jsx13(Box13, { marginRight: 1, children: isSelected ? /* @__PURE__ */ jsx13(Text14, { color: "cyan", bold: true, children: SYM.cursor }) : /* @__PURE__ */ jsx13(Text14, { children: " " }) });
+}
+function Item5({ label, isSelected }) {
+  return /* @__PURE__ */ jsx13(Text14, { color: isSelected ? "white" : "gray", children: label });
+}
+function scanJsonFilesRecursive2(dir) {
+  const results = [];
+  try {
+    let walk = function(d) {
+      let entries;
+      try {
+        entries = readdirSync3(d, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (e.isDirectory()) {
+          if (e.name !== "classified") walk(join9(d, e.name));
+        } else if (e.name.endsWith(".json")) {
+          const full = join9(d, e.name);
+          results.push({ label: relative2(abs, full), value: full });
+        }
+      }
+    };
+    const abs = resolve13(dir);
+    if (!existsSync10(abs)) return [];
+    walk(abs);
+  } catch {
+  }
+  return results.sort((a, b) => b.label.localeCompare(a.label));
+}
+function TableView({ records, filePath, onBack }) {
+  const [rowIdx, setRowIdx] = useState10(0);
+  const [page, setPage] = useState10(0);
+  const columns = useMemo3(() => detectColumns(records), [records]);
+  const totalPages = Math.max(1, Math.ceil(records.length / PAGE_SIZE2));
+  const pageRows = records.slice(page * PAGE_SIZE2, (page + 1) * PAGE_SIZE2);
+  const totalRows = records.length;
+  useEffect4(() => {
+    setRowIdx(0);
+  }, [page]);
+  useInput10((_, key) => {
+    if (key.escape) {
+      onBack();
+      return;
+    }
+    if (key.upArrow) setRowIdx((i) => Math.max(0, i - 1));
+    if (key.downArrow) setRowIdx((i) => Math.min(pageRows.length - 1, i + 1));
+    if (key.leftArrow && page > 0) {
+      setPage((p) => p - 1);
+    }
+    if (key.rightArrow && page < totalPages - 1) {
+      setPage((p) => p + 1);
+    }
+  });
+  const selectedRecord = pageRows[rowIdx];
+  const COL_WIDTH = 22;
+  return /* @__PURE__ */ jsxs14(Box13, { flexDirection: "column", paddingX: 2, paddingY: 1, gap: 1, children: [
+    /* @__PURE__ */ jsxs14(Box13, { gap: 2, children: [
+      /* @__PURE__ */ jsx13(Text14, { bold: true, color: "cyan", children: "\u6570\u636E\u9884\u89C8" }),
+      /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: basename2(filePath) }),
+      /* @__PURE__ */ jsxs14(Text14, { color: "gray", dimColor: true, children: [
+        "\u5171 ",
+        totalRows,
+        " \u6761"
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxs14(Box13, { gap: 1, children: [
+      /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: "  #".padEnd(5) }),
+      columns.map((col) => /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: truncate(col, COL_WIDTH).padEnd(COL_WIDTH) }, col))
+    ] }),
+    /* @__PURE__ */ jsx13(Box13, { flexDirection: "column", children: pageRows.map((rec, i) => {
+      const globalN = page * PAGE_SIZE2 + i + 1;
+      const isCursor = i === rowIdx;
+      return /* @__PURE__ */ jsxs14(Box13, { gap: 1, children: [
+        /* @__PURE__ */ jsxs14(Text14, { color: isCursor ? "cyan" : "gray", children: [
+          isCursor ? SYM.cursor : " ",
+          String(globalN).padEnd(3)
+        ] }),
+        columns.map((col) => /* @__PURE__ */ jsx13(
+          Text14,
+          {
+            color: isCursor ? "white" : "gray",
+            dimColor: !isCursor,
+            wrap: "truncate",
+            children: truncate(cellValue(rec, col), COL_WIDTH).padEnd(COL_WIDTH)
+          },
+          col
+        ))
+      ] }, i);
+    }) }),
+    selectedRecord && /* @__PURE__ */ jsxs14(
+      Box13,
+      {
+        flexDirection: "column",
+        borderStyle: "round",
+        borderColor: "cyan",
+        paddingX: 2,
+        paddingY: 0,
+        marginTop: 1,
+        children: [
+          /* @__PURE__ */ jsxs14(Text14, { bold: true, color: "cyan", children: [
+            "\u8BE6\u60C5  \u884C ",
+            page * PAGE_SIZE2 + rowIdx + 1
+          ] }),
+          columns.map((col) => /* @__PURE__ */ jsxs14(Box13, { gap: 2, children: [
+            /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: col.padEnd(20) }),
+            /* @__PURE__ */ jsx13(Text14, { color: "white", wrap: "truncate", children: truncate(cellValue(selectedRecord, col), 80) })
+          ] }, col))
+        ]
+      }
+    ),
+    /* @__PURE__ */ jsx13(Box13, { gap: 2, children: /* @__PURE__ */ jsxs14(Text14, { color: "gray", dimColor: true, children: [
+      "\u7B2C ",
+      page + 1,
+      " / ",
+      totalPages,
+      " \u9875"
+    ] }) }),
+    /* @__PURE__ */ jsx13(KeyBar, { hints: [
+      { key: "\u2191\u2193", label: "\u9009\u62E9\u884C" },
+      { key: "\u2190\u2192", label: "\u7FFB\u9875" },
+      { key: "ESC", label: "\u8FD4\u56DE" }
+    ] })
+  ] });
+}
+function DataPreview({ initialFile, onNav }) {
+  const [selectedFile, setSelectedFile] = useState10(initialFile ?? null);
+  const [records, setRecords] = useState10(null);
+  const [loadError, setLoadError] = useState10("");
+  const saved = getConfig();
+  const scanDir = saved.outDir || "./out/";
+  const fileItems = useMemo3(() => scanJsonFilesRecursive2(scanDir), [scanDir]);
+  useInput10((_, key) => {
+    if (key.escape && !selectedFile) onNav("menu");
+  });
+  useEffect4(() => {
+    if (!selectedFile) return;
+    try {
+      const raw = readFileSync6(selectedFile, "utf-8");
+      const data = JSON.parse(raw);
+      const arr = extractRecords(data);
+      setRecords(arr);
+      setLoadError("");
+    } catch (e) {
+      setLoadError(e.message);
+      setRecords(null);
+    }
+  }, [selectedFile]);
+  if (selectedFile && records) {
+    return /* @__PURE__ */ jsx13(
+      TableView,
+      {
+        records,
+        filePath: selectedFile,
+        onBack: () => {
+          setSelectedFile(null);
+          setRecords(null);
+        }
+      }
+    );
+  }
+  return /* @__PURE__ */ jsxs14(Box13, { flexDirection: "column", paddingX: 2, paddingY: 1, gap: 1, children: [
+    /* @__PURE__ */ jsx13(Text14, { bold: true, color: "cyan", children: "\u9884\u89C8\u91C7\u96C6\u6570\u636E" }),
+    loadError && /* @__PURE__ */ jsxs14(Text14, { color: "red", children: [
+      SYM.cross,
+      " \u52A0\u8F7D\u5931\u8D25\uFF1A",
+      loadError
+    ] }),
+    fileItems.length === 0 ? /* @__PURE__ */ jsx13(Box13, { borderStyle: "round", borderColor: "gray", borderDimColor: true, paddingX: 2, children: /* @__PURE__ */ jsxs14(Text14, { color: "gray", dimColor: true, children: [
+      scanDir,
+      " \u4E2D\u6682\u65E0 .json \u6587\u4EF6"
+    ] }) }) : /* @__PURE__ */ jsxs14(Box13, { flexDirection: "column", gap: 1, children: [
+      /* @__PURE__ */ jsxs14(Text14, { color: "gray", dimColor: true, children: [
+        "\u9009\u62E9\u8981\u9884\u89C8\u7684\u6587\u4EF6\uFF08\u5171 ",
+        fileItems.length,
+        " \u4E2A\uFF09"
+      ] }),
+      /* @__PURE__ */ jsx13(
+        SelectInput6,
+        {
+          items: fileItems,
+          onSelect: ({ value }) => setSelectedFile(value),
+          indicatorComponent: Indicator5,
+          itemComponent: Item5
+        }
+      )
+    ] }),
+    /* @__PURE__ */ jsx13(KeyBar, { hints: [
+      { key: "Enter", label: "\u9884\u89C8" },
+      { key: "ESC", label: "\u8FD4\u56DE\u83DC\u5355" }
+    ] })
+  ] });
+}
+
+// src/tui/App.js
+import { jsx as jsx14, jsxs as jsxs15 } from "react/jsx-runtime";
 var SUBTITLES = {
   menu: "\u591A\u5E73\u53F0\u5185\u5BB9\u98CE\u9669\u5BA1\u67E5",
   settings: "\u8BBE\u7F6E",
@@ -4975,29 +5279,31 @@ var SUBTITLES = {
   "scrape-run": "\u91C7\u96C6\u8FD0\u884C\u4E2D",
   "classify-setup": "AI \u5206\u7C7B\u8BBE\u7F6E",
   "classify-run": "AI \u5206\u7C7B\u8FD0\u884C\u4E2D",
-  jobs: "\u5206\u7C7B\u4EFB\u52A1\u5217\u8868"
+  jobs: "\u5206\u7C7B\u4EFB\u52A1\u5217\u8868",
+  "data-preview": "\u6570\u636E\u9884\u89C8"
 };
 function App() {
-  const [screen, setScreen] = useState10("menu");
-  const [navParams, setParams] = useState10({});
+  const [screen, setScreen] = useState11("menu");
+  const [navParams, setParams] = useState11({});
   const { rows, columns } = useWindowSize();
   const onNav = (target, params = {}) => {
     setParams(params);
     setScreen(target);
   };
-  return /* @__PURE__ */ jsxs14(Box13, { flexDirection: "column", width: columns, height: rows, children: [
-    /* @__PURE__ */ jsx13(Header, { subtitle: SUBTITLES[screen] }),
-    screen === "menu" && /* @__PURE__ */ jsx13(MainMenu, { onNav }),
-    screen === "settings" && /* @__PURE__ */ jsx13(Settings, { onNav }),
-    screen === "scrape-setup" && /* @__PURE__ */ jsx13(ScrapeSetup, { onNav }),
-    screen === "scrape-run" && /* @__PURE__ */ jsx13(ScrapeRun, { config: navParams.scrapeConfig, onNav }),
-    screen === "classify-setup" && /* @__PURE__ */ jsx13(ClassifySetup, { onNav }),
-    screen === "classify-run" && /* @__PURE__ */ jsx13(ClassifyRun, { config: navParams.classifyConfig, onNav }),
-    screen === "jobs" && /* @__PURE__ */ jsx13(JobsList, { onNav })
+  return /* @__PURE__ */ jsxs15(Box14, { flexDirection: "column", width: columns, height: rows, children: [
+    /* @__PURE__ */ jsx14(Header, { subtitle: SUBTITLES[screen] }),
+    screen === "menu" && /* @__PURE__ */ jsx14(MainMenu, { onNav }),
+    screen === "settings" && /* @__PURE__ */ jsx14(Settings, { onNav }),
+    screen === "scrape-setup" && /* @__PURE__ */ jsx14(ScrapeSetup, { onNav }),
+    screen === "scrape-run" && /* @__PURE__ */ jsx14(ScrapeRun, { config: navParams.scrapeConfig, onNav }),
+    screen === "classify-setup" && /* @__PURE__ */ jsx14(ClassifySetup, { onNav }),
+    screen === "classify-run" && /* @__PURE__ */ jsx14(ClassifyRun, { config: navParams.classifyConfig, onNav }),
+    screen === "jobs" && /* @__PURE__ */ jsx14(JobsList, { onNav }),
+    screen === "data-preview" && /* @__PURE__ */ jsx14(DataPreview, { initialFile: navParams.previewFile, onNav })
   ] });
 }
 
 // src/tui/main.js
-import { jsx as jsx14 } from "react/jsx-runtime";
+import { jsx as jsx15 } from "react/jsx-runtime";
 applyToEnv();
-render(/* @__PURE__ */ jsx14(App, {}), { alternateScreen: true });
+render(/* @__PURE__ */ jsx15(App, {}), { alternateScreen: true });

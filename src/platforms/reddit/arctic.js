@@ -28,13 +28,13 @@ async function arcticFetch(path, params = {}, retries = 3) {
     const remaining = parseInt(res.headers.get('x-ratelimit-remaining') ?? '999', 10);
     if (remaining < 20) {
       const reset = parseInt(res.headers.get('x-ratelimit-reset') ?? '10', 10);
-      process.stdout.write(`\n[RATE LIMIT] ${remaining} requests left — waiting ${reset}s...\n`);
+      console.warn(`[WARN] Rate limit — ${remaining} requests left, waiting ${reset}s...`);
       await sleep(reset * 1000);
     }
 
     if (res.status === 429) {
       const wait = parseInt(res.headers.get('retry-after') ?? '60', 10) * 1000;
-      process.stdout.write(`\n[RATE LIMIT 429] Waiting ${Math.ceil(wait / 1000)}s...\n`);
+      console.warn(`[WARN] Rate limit 429 — waiting ${Math.ceil(wait / 1000)}s...`);
       await sleep(wait);
       continue;
     }
@@ -152,7 +152,7 @@ async function fetchListing(path, opts = {}) {
       if (item && filter(item)) items.push(item);
     }
 
-    process.stdout.write(`\r  [${label}] ${items.length} items (page ${page})...`);
+    console.log(`[${label}] ${items.length} items (page ${page})`);
 
     // Slide cursor to just before the oldest item in this batch
     const lastTs = batch[batch.length - 1].created_utc ?? batch[batch.length - 1].created;
@@ -165,7 +165,6 @@ async function fetchListing(path, opts = {}) {
     await sleep(DELAY_MS);
   }
 
-  process.stdout.write('\n');
   return items.slice(0, max);
 }
 

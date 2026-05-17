@@ -54,7 +54,7 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
     // P1: respect rate-limit pause
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
-      process.stdout.write(`\n  Rate limit — waiting ${Math.ceil(pause / 1000)}s...\n`);
+      console.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
       await page.waitForTimeout(pause);
     }
 
@@ -65,7 +65,7 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
       if (!tweetMap.has(t.id)) tweetMap.set(t.id, t);
     }
 
-    process.stdout.write(`\r  [${label}] ${tweetMap.size} tweets (scroll #${round})...`);
+    console.log(`[${label}] ${tweetMap.size} tweets (scroll #${round})`);
 
     // P2: early stop — all visible tweets are older than --since
     if (shouldStop(domTweets)) {
@@ -117,5 +117,4 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
     }
   }
 
-  process.stdout.write('\n');
 }

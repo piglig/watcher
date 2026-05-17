@@ -31,7 +31,7 @@ async function redditFetch(path, params = {}, retries = 3) {
 
     if (res.status === 429) {
       const wait = parseInt(res.headers.get('retry-after') ?? '60', 10) * 1000;
-      process.stdout.write(`\n[RATE LIMIT] Waiting ${Math.ceil(wait / 1000)}s...\n`);
+      console.warn(`[WARN] Rate limit 429 — waiting ${Math.ceil(wait / 1000)}s...`);
       await sleep(wait);
       continue;
     }
@@ -141,7 +141,7 @@ async function fetchListing(path, opts = {}) {
       if (filter(item)) items.push(item);
     }
 
-    process.stdout.write(`\r  [${label}] ${items.length} items (page ${page})...`);
+    console.log(`[${label}] ${items.length} items (page ${page})`);
 
     if (earlyStop(batch)) {
       console.log(`\n  [${label}] Date cutoff reached — stopping early.`);
@@ -155,7 +155,6 @@ async function fetchListing(path, opts = {}) {
     await sleep(DELAY_MS);
   }
 
-  process.stdout.write('\n');
   return items.slice(0, max);
 }
 

@@ -45,7 +45,7 @@ function useElapsed(active) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-const RECENT_LINES = 3;
+const RECENT_LINES = 5;
 
 export default function ScrapeRun({ config, onNav }) {
   const [recentLogs, setRecentLogs] = useState([]);
@@ -74,6 +74,11 @@ export default function ScrapeRun({ config, onNav }) {
           wait:       false,
         },
       });
+    }
+
+    // 采集完成后按 P → 预览第一个采集文件
+    if ((input === 'p' || input === 'P') && status === 'done' && result?.savedFiles?.length) {
+      onNav('data-preview', { previewFile: result.savedFiles[0].file });
     }
   });
 
@@ -181,7 +186,10 @@ export default function ScrapeRun({ config, onNav }) {
 
       {status !== 'running' && (
         <KeyBar hints={[
-          ...(status === 'done' ? [{ key: 'Enter', label: '继续 AI 分类' }] : []),
+          ...(status === 'done' ? [
+            { key: 'Enter', label: '继续 AI 分类' },
+            { key: 'P',     label: '预览数据' },
+          ] : []),
           { key: 'ESC', label: '返回主菜单' },
         ]} />
       )}

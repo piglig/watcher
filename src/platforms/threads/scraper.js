@@ -1,5 +1,5 @@
 ﻿/**
- * threads.js 鈥?Threads scraper
+ * threads.js —Threads scraper
  * Uses CloakBrowser to intercept Threads' internal GraphQL API responses.
  *
  * First run: headed mode for login (Instagram/Threads credentials).
@@ -17,7 +17,7 @@ import {
 const DESKTOP_VIEWPORT = { width: 1280, height: 900 };
 
 async function setupDesktopPage(context) {
-  // Do NOT use shared setupPage 鈥?it blocks stylesheets/fonts which breaks Threads rendering.
+  // Do NOT use shared setupPage —it blocks stylesheets/fonts which breaks Threads rendering.
   const page = await context.newPage();
   await page.route('**/*', route => {
     const type = route.request().resourceType();
@@ -30,7 +30,7 @@ async function setupDesktopPage(context) {
 
 export const DEFAULT_SESSION_DIR = resolve('.session-threads');
 
-// 鈹€鈹€ Username parsing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Username parsing ──────────────────────────────────────────────────────────
 
 export function parseThreadsUsername(raw) {
   const urlMatch = raw.match(/threads\.(?:net|com)\/@?([A-Za-z0-9_.]+)/);
@@ -38,11 +38,11 @@ export function parseThreadsUsername(raw) {
   return raw.replace(/^@/, '').trim() || null;
 }
 
-// 鈹€鈹€ Login helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Login helpers ─────────────────────────────────────────────────────────────
 
 export async function isLoggedInThreads(page) {
   try {
-    // sessionid is set by Instagram/Meta auth 鈥?present iff the user is logged in.
+    // sessionid is set by Instagram/Meta auth —present iff the user is logged in.
     const cookies = await page.context().cookies();
     return cookies.some(c => c.name === 'sessionid');
   } catch {
@@ -52,9 +52,9 @@ export async function isLoggedInThreads(page) {
 
 async function waitForThreadsLogin(page) {
   console.log('\nNot logged in. Please log in to Threads in the browser window.');
-  console.log('鈹€'.repeat(50));
-  console.log('  After login completes 鈫?press Enter here to confirm');
-  console.log('鈹€'.repeat(50));
+  console.log('─'.repeat(50));
+  console.log('  After login completes →press Enter here to confirm');
+  console.log('─'.repeat(50));
 
   return new Promise(resolve => {
     let done = false;
@@ -73,14 +73,14 @@ async function waitForThreadsLogin(page) {
       if (await isLoggedInThreads(page)) finish(true);
     }, 1500);
 
-    // Manual confirm: user presses Enter 鈥?then verify login actually happened
+    // Manual confirm: user presses Enter —then verify login actually happened
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     rl.question('', async () => {
       rl.close();
       if (done) return;
       const ok = await isLoggedInThreads(page);
       if (!ok) {
-        console.log('\n  Not logged in yet 鈥?still waiting (press Enter again after login)...');
+        console.log('\n  Not logged in yet —still waiting (press Enter again after login)...');
         const rl2 = createInterface({ input: process.stdin, output: process.stdout });
         rl2.question('', async () => {
           rl2.close();
@@ -96,7 +96,7 @@ async function waitForThreadsLogin(page) {
   });
 }
 
-// 鈹€鈹€ Parsers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Parsers ───────────────────────────────────────────────────────────────────
 
 function extractMedia(post) {
   const media = [];
@@ -155,7 +155,7 @@ function parsePost(post) {
   };
 }
 
-// 鈹€鈹€ SSR + GraphQL extraction 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── SSR + GraphQL extraction ──────────────────────────────────────────────────
 
 function findPostsInObj(obj, results, depth = 0) {
   if (depth > 25 || !obj || typeof obj !== 'object') return;
@@ -184,7 +184,7 @@ async function extractSSRPosts(page) {
   return results;
 }
 
-// 鈹€鈹€ Interceptor 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Interceptor ───────────────────────────────────────────────────────────────
 
 export function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
   const { debug = false } = opts;
@@ -196,7 +196,7 @@ export function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
 
     if (status === 429) {
       state.rateLimitUntil = Date.now() + 60_000;
-      process.stdout.write('\n[RATE LIMIT] Pausing 60s...\n');
+      console.warn('[WARN] Rate limit 429 — pausing 60s...');
       return;
     }
 
@@ -222,12 +222,12 @@ export function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
       if (debug && !state.dumpedOnce) {
         state.dumpedOnce = true;
         writeFileSync(resolve('debug_threads_response.json'), JSON.stringify(json, null, 2), 'utf-8');
-        dbg(`Raw response dumped 鈫?debug_threads_response.json  (url: ${url.slice(0, 80)})`);
+        dbg(`Raw response dumped →debug_threads_response.json  (url: ${url.slice(0, 80)})`);
       }
 
       const found = [];
       findPostsInObj(json, found);
-      dbg(`XHR parsed 鈫?${found.length} threads  (url: ${url.slice(0, 80)})`);
+      dbg(`XHR parsed →${found.length} threads  (url: ${url.slice(0, 80)})`);
       for (const t of found) {
         if (!threadMap.has(t.id)) threadMap.set(t.id, t);
       }
@@ -237,7 +237,7 @@ export function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
   });
 }
 
-// 鈹€鈹€ Scroll loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Scroll loop ───────────────────────────────────────────────────────────────
 
 async function scrollPage(page, threadMap, state, opts = {}) {
   const { max = 200, debug = false } = opts;
@@ -255,13 +255,13 @@ async function scrollPage(page, threadMap, state, opts = {}) {
 
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
-      process.stdout.write(`\n  Rate limit 鈥?waiting ${Math.ceil(pause / 1000)}s...\n`);
+      console.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
       await page.waitForTimeout(pause);
     }
 
-    process.stdout.write(`\r  ${threadMap.size} threads (scroll #${round})...`);
+    console.log(`Threads: ${threadMap.size} collected (scroll #${round})`);
 
-    // Simulate real mouse wheel 鈥?fires WheelEvent which React/IntersectionObserver
+    // Simulate real mouse wheel —fires WheelEvent which React/IntersectionObserver
     // listens to. window.scrollTo() bypasses this and doesn't trigger infinite scroll.
     for (let i = 0; i < 15; i++) {
       await page.mouse.wheel(0, 600);
@@ -293,10 +293,9 @@ async function scrollPage(page, threadMap, state, opts = {}) {
     }
   }
 
-  process.stdout.write('\n');
 }
 
-// 鈹€鈹€ Per-user scrape 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Per-user scrape ───────────────────────────────────────────────────────────
 
 function buildFilter(opts = {}) {
   const since   = opts.since   ? new Date(opts.since)   : null;

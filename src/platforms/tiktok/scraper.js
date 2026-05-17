@@ -246,7 +246,7 @@ async function scrollForVideos(page, videoMap, { max, debug, state }) {
     } else {
       stale = 0;
     }
-    process.stdout.write(`\r  Videos collected: ${videoMap.size}...`);
+    console.log(`Videos collected: ${videoMap.size}`);
     dbg(`scroll — videos: ${videoMap.size}, stale: ${stale}, hasMore: ${state.hasMore}`);
   }
 
@@ -449,13 +449,12 @@ async function fetchCommentsParallel(context, videos, maxComments, debug) {
       const v = videos[i];
       results[i] = await fetchCommentsOnPage(page, v.id, v.author.username, maxComments, debug);
       done++;
-      process.stdout.write(`\r  Comments: ${done}/${videos.length}...`);
+      console.log(`Comments: ${done}/${videos.length}`);
     }
     await page.close().catch(() => {});
   };
 
   await Promise.all(pages.map(worker));
-  process.stdout.write('\n');
   return results;
 }
 
@@ -515,7 +514,6 @@ export async function scrapeTikTokUser(target, context, opts = {}) {
 
     // Scroll to collect videos
     await scrollForVideos(page, videoMap, { max, debug, state });
-    process.stdout.write('\n');
   } finally {
     page.off('response', onResponse);
     await page.close().catch(() => {});

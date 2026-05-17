@@ -1,5 +1,5 @@
 ﻿/**
- * pixiv.js 鈥?Pixiv scraper
+ * pixiv.js —Pixiv scraper
  * Uses CloakBrowser for login, then calls Pixiv's internal AJAX API directly
  * via page.evaluate() (browser cookies are forwarded automatically).
  *
@@ -50,7 +50,7 @@ async function pixivGet(page, url) {
   return result.data.body;
 }
 
-// 鈹€鈹€ Username / ID parsing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Username / ID parsing ─────────────────────────────────────────────────────
 
 export function parsePixivUser(raw) {
   // Full URL: https://www.pixiv.net/en/users/1234567
@@ -61,7 +61,7 @@ export function parsePixivUser(raw) {
   return null;
 }
 
-// 鈹€鈹€ Login helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Login helpers ─────────────────────────────────────────────────────────────
 
 export async function isLoggedInPixiv(page) {
   try {
@@ -80,9 +80,9 @@ export async function isLoggedInPixiv(page) {
 
 async function waitForPixivLogin(page) {
   console.log('\nNot logged in. Please log in to Pixiv in the browser window.');
-  console.log('鈹€'.repeat(50));
-  console.log('  After login completes 鈫?press Enter here to confirm');
-  console.log('鈹€'.repeat(50));
+  console.log('─'.repeat(50));
+  console.log('  After login completes →press Enter here to confirm');
+  console.log('─'.repeat(50));
 
   return new Promise(resolve => {
     let done = false;
@@ -105,7 +105,7 @@ async function waitForPixivLogin(page) {
       if (done) return;
       const ok = await isLoggedInPixiv(page);
       if (!ok) {
-        console.log('\n  Not logged in yet 鈥?still waiting (press Enter again after login)...');
+        console.log('\n  Not logged in yet —still waiting (press Enter again after login)...');
         const rl2 = createInterface({ input: process.stdin, output: process.stdout });
         rl2.question('', async () => {
           rl2.close();
@@ -120,7 +120,7 @@ async function waitForPixivLogin(page) {
   });
 }
 
-// 鈹€鈹€ Parsers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Parsers ───────────────────────────────────────────────────────────────────
 
 function parseWork(work) {
   if (!work?.id) return null;
@@ -184,7 +184,7 @@ function buildFilter(opts = {}) {
   };
 }
 
-// 鈹€鈹€ Per-user scrape 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Per-user scrape ───────────────────────────────────────────────────────────
 
 /**
  * Scrape artworks for a single Pixiv user.
@@ -248,7 +248,7 @@ export async function scrapePixivUser(userId, page, opts = {}) {
 
   for (let i = 0; i < limit; i += BATCH_SIZE) {
     const batch = allIds.slice(i, Math.min(i + BATCH_SIZE, limit));
-    process.stdout.write(`\r  Fetching ${Math.min(i + batch.length, limit)}/${limit}...`);
+    console.log(`Fetching artworks: ${Math.min(i + batch.length, limit)}/${limit}`);
 
     // Fetch BATCH_SIZE artworks concurrently inside the browser context
     const works = await page.evaluate(async (ids) => {
@@ -270,8 +270,6 @@ export async function scrapePixivUser(userId, page, opts = {}) {
 
     if (i + BATCH_SIZE < limit) await delay(BATCH_DELAY);
   }
-
-  process.stdout.write('\n');
 
   return artworks
     .filter(buildFilter(filterOpts))

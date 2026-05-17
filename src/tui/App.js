@@ -8,6 +8,7 @@ import ScrapeRun     from './screens/ScrapeRun.js';
 import ClassifySetup from './screens/ClassifySetup.js';
 import ClassifyRun   from './screens/ClassifyRun.js';
 import JobsList      from './screens/JobsList.js';
+import DataPreview   from './screens/DataPreview.js';
 
 const SUBTITLES = {
   menu:             '多平台内容风险审查',
@@ -17,6 +18,7 @@ const SUBTITLES = {
   'classify-setup': 'AI 分类设置',
   'classify-run':   'AI 分类运行中',
   jobs:             '分类任务列表',
+  'data-preview':   '数据预览',
 };
 
 export default function App() {
@@ -39,6 +41,7 @@ export default function App() {
       {screen === 'classify-setup' && <ClassifySetup  onNav={onNav} />}
       {screen === 'classify-run'   && <ClassifyRun    config={navParams.classifyConfig} onNav={onNav} />}
       {screen === 'jobs'           && <JobsList       onNav={onNav} />}
+      {screen === 'data-preview'   && <DataPreview    initialFile={navParams.previewFile} onNav={onNav} />}
     </Box>
   );
 }

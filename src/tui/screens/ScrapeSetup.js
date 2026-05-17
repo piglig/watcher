@@ -87,11 +87,6 @@ function buildSteps(platforms) {
     });
   }
 
-  // 若设置中已配置默认目录，跳过此步骤
-  if (!getConfig().outDir) {
-    steps.push({ key: 'outDir', short: '目录', label: '输出目录', type: 'text', hint: '默认 ./out/' });
-  }
-
   return steps;
 }
 
@@ -145,13 +140,13 @@ export default function ScrapeSetup({ onNav }) {
     const currentSteps = buildSteps(selectedPlatforms);
     if (stepIdx + 1 >= currentSteps.length) {
       // 构建各平台独立配置，顺序执行
-      const savedOutDir = getConfig().outDir;
+      const outDir = getConfig().outDir || './out/';
       const shared = {
         max:          next.max          || '200',
         since:        next.since        || '',
         until:        next.until        || '',
         headed:       next.headed === 'true',
-        outDir:       next.outDir       || savedOutDir || './out/',
+        outDir,
         redditSource: next.redditSource || 'arctic',
         apiKey:       next.youtubeKey   || process.env.YOUTUBE_API_KEY,
       };

@@ -153,7 +153,7 @@ export function attachInterceptor(page, tweetMap, state, opts = {}) {
     if (status === 429) {
       const retryAfter = parseInt(response.headers()['retry-after'] ?? '60', 10);
       state.rateLimitUntil = Date.now() + retryAfter * 1000;
-      process.stdout.write(`\n[RATE LIMIT] Pausing ${retryAfter}s...\n`);
+      console.warn(`[WARN] Rate limit — pausing ${retryAfter}s...`);
       return;
     }
 
