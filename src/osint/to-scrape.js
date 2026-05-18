@@ -22,6 +22,7 @@ const PLATFORM_ALIASES = {
   naver:   ['naver', 'naver café', 'naver cafe', 'naver blog'],
   youtube:   ['youtube'],
   instagram: ['instagram'],
+  twitch:    ['twitch'],
 };
 
 function resolvePlatform(rawPlatform) {
@@ -90,6 +91,10 @@ function normalizeHandle(scrapeId, account) {
     case 'instagram': {
       const h = stripAt(handle_id) || pickFromUrl(url, /instagram\.com\/([A-Za-z0-9_.]+)/i);
       return h || null;
+    }
+    case 'twitch': {
+      const h = stripAt(handle_id) || pickFromUrl(url, /twitch\.tv\/([A-Za-z0-9_]+)/i);
+      return h ? h.toLowerCase() : null;
     }
     default:
       return null;

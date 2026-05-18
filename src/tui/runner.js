@@ -22,6 +22,8 @@ import { scrapeYouTube }              from '../platforms/youtube/index.js';
 import { toYouTubeJSON }              from '../platforms/youtube/index.js';
 import { scrapeInstagram, parseInstagramUsername } from '../platforms/instagram/index.js';
 import { toInstagramJSON }            from '../platforms/instagram/index.js';
+import { scrapeTwitch, parseTwitchLogin } from '../platforms/twitch/index.js';
+import { toTwitchJSON }               from '../platforms/twitch/index.js';
 
 // ── Platform metadata (used by ScrapeSetup wizard) ────────────────────────────
 
@@ -66,6 +68,11 @@ export const PLATFORMS = [
     needsBrowser: true,
     targetsLabel: '用户名', targetsHint: '@username，多个用逗号分隔',
   },
+  {
+    value: 'twitch', label: 'Twitch',
+    needsBrowser: false, needsApiKey: true,
+    targetsLabel: '频道名', targetsHint: '@login 或 twitch.tv/xxx，多个用逗号分隔',
+  },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -108,7 +115,9 @@ export async function runScrape(config) {
     until,
     headed   = false,
     apiKey,
-    redditSource = 'arctic',
+    redditSource        = 'arctic',
+    twitchClientId      = process.env.TWITCH_CLIENT_ID,
+    twitchClientSecret  = process.env.TWITCH_CLIENT_SECRET,
     outDir   = './out/',
   } = config;
 
@@ -200,6 +209,17 @@ export async function runScrape(config) {
     for (const [username, { profile, posts }] of Object.entries(results)) {
       if (!posts.length) continue;
       save(`${stamp}_${username}.json`, toInstagramJSON(profile, posts), posts.length, `@${username}`);
+    }
+
+  } else if (platform === 'twitch') {
+    const clientId     = twitchClientId;
+    const clientSecret = twitchClientSecret;
+    const parsed  = targets.map(t => parseTwitchLogin(t) ?? t);
+    const results = await scrapeTwitch(parsed, { ...opts, clientId, clientSecret });
+    for (const [login, { profile, videos, clips }] of Object.entries(results)) {
+      const total = videos.length + clips.length;
+      if (!total) continue;
+      save(`${stamp}_${login}.json`, toTwitchJSON(profile, videos, clips), total, login);
     }
   }
 

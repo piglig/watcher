@@ -78,6 +78,17 @@ function buildSteps(platforms) {
     });
   }
 
+  if (platforms.includes('twitch') && (!process.env.TWITCH_CLIENT_ID || !process.env.TWITCH_CLIENT_SECRET)) {
+    steps.push({
+      key: 'twitchClientId', short: 'TW ID', label: 'Twitch Client-ID', type: 'text',
+      hint: 'https://dev.twitch.tv/console 免费注册获取',
+    });
+    steps.push({
+      key: 'twitchClientSecret', short: 'TW Secret', label: 'Twitch Client-Secret', type: 'text',
+      hint: '与 Client-ID 配套，见同一页面',
+    });
+  }
+
   if (platforms.includes('reddit')) {
     steps.push({
       key: 'redditSource', short: '数据源', label: 'Reddit 数据源', type: 'select',
@@ -187,13 +198,15 @@ export default function ScrapeSetup({ onNav, prefill }) {
       // 构建各平台独立配置，顺序执行
       const outDir = getConfig().outDir || './out/';
       const shared = {
-        max:          next.max          || '200',
-        since:        next.since        || '',
-        until:        next.until        || '',
-        headed:       next.headed === 'true',
+        max:                next.max          || '200',
+        since:              next.since        || '',
+        until:              next.until        || '',
+        headed:             next.headed === 'true',
         outDir,
-        redditSource: next.redditSource || 'arctic',
-        apiKey:       next.youtubeKey   || process.env.YOUTUBE_API_KEY,
+        redditSource:       next.redditSource || 'arctic',
+        apiKey:             next.youtubeKey   || process.env.YOUTUBE_API_KEY,
+        twitchClientId:     next.twitchClientId     || process.env.TWITCH_CLIENT_ID,
+        twitchClientSecret: next.twitchClientSecret || process.env.TWITCH_CLIENT_SECRET,
       };
 
       const platformConfigs = selectedPlatforms.map(pv => ({

@@ -124,6 +124,22 @@ const NORMALIZERS = {
     };
   },
 
+  twitch(p) {
+    return {
+      ...p,
+      text:   [p.title, p.description].filter(Boolean).join('\n'),
+      author: {
+        id:       p.author?.id       ?? null,
+        username: p.author?.username ?? null,
+        name:     p.author?.name     ?? null,
+      },
+      media:   p.thumbnail ? [{ type: 'photo', url: p.thumbnail }] : [],
+      rt_from: null,
+      tags:    [],
+      is_r18:  false,
+    };
+  },
+
   instagram(p) {
     return {
       ...p,
@@ -177,16 +193,21 @@ export function normalizePost(post) {
  *   - Reddit:   [...posts]   (direct array)
  *   - Threads:  [...threads] (direct array)
  *   - Pixiv:    [...artworks](direct array)
+ *   - Twitch:   { profile, videos, clips }
  */
 export function extractPosts(data) {
   if (Array.isArray(data)) return data;
   if (!data || typeof data !== 'object') return [];
 
   if (Array.isArray(data.tweets))   return data.tweets;
-  if (Array.isArray(data.videos))   return data.videos;
   if (Array.isArray(data.posts))    return data.posts;
   if (Array.isArray(data.artworks)) return data.artworks;
   if (Array.isArray(data.items))    return data.items;
+
+  // Twitch: merge videos + clips into one flat array
+  if (Array.isArray(data.videos) || Array.isArray(data.clips)) {
+    return [...(data.videos ?? []), ...(data.clips ?? [])];
+  }
 
   return [];
 }

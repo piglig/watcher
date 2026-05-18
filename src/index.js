@@ -49,6 +49,12 @@ export {
   toNaverJSON, toNaverCSV,
 } from './platforms/naver/index.js';
 
+// ── Twitch ────────────────────────────────────────────────────────────────────
+export {
+  scrapeTwitch, scrapeTwitchChannel, parseTwitchLogin,
+  toTwitchJSON, toTwitchVodsCSV, toTwitchClipsCSV,
+} from './platforms/twitch/index.js';
+
 // ── Instagram ─────────────────────────────────────────────────────────────────
 export {
   scrapeInstagram, scrapeInstagramUser, parseInstagramUsername,

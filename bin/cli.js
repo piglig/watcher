@@ -11,6 +11,7 @@
  *   sns-audit naver   <url...>      [options]
  *   sns-audit youtube    <target...>   [options]
  *   sns-audit instagram  <username...> [options]
+ *   sns-audit twitch     <login...>   [options]
  *   sns-audit classify               [options]
  */
 
@@ -43,6 +44,9 @@ import { printYouTubeStats, toYouTubeJSON, toYouTubeCSV } from '../src/platforms
 
 import { scrapeInstagram, parseInstagramUsername } from '../src/platforms/instagram/index.js';
 import { printInstagramStats, toInstagramJSON, toInstagramCSV } from '../src/platforms/instagram/index.js';
+
+import { scrapeTwitch, parseTwitchLogin } from '../src/platforms/twitch/index.js';
+import { printTwitchStats, toTwitchJSON, toTwitchVodsCSV, toTwitchClipsCSV } from '../src/platforms/twitch/index.js';
 
 import { submitBatch, fetchBatchResults, aggregateUserRisk } from '../src/classifier/index.js';
 import { applyRulesAll }            from '../src/classifier/index.js';
@@ -395,6 +399,69 @@ instagramCmd
       if (outFile) {
         writeOutput(outFile, format === 'csv' ? toInstagramCSV(posts) : toInstagramJSON(profile, posts));
         console.log(`Saved ${posts.length} posts → ${outFile}`);
+      } else { console.log('  Use --out <path> to save results.'); }
+    }
+  });
+
+// ── twitch ────────────────────────────────────────────────────────────────────
+
+const twitchCmd = program.command('twitch <login...>')
+  .description('Scrape Twitch channel VODs and Clips via Helix API');
+
+addCommonScrapeOptions(twitchCmd);
+twitchCmd
+  .option('--client-id <id>',      'Twitch Client-ID (or TWITCH_CLIENT_ID env var)')
+  .option('--client-secret <sec>', 'Twitch Client-Secret (or TWITCH_CLIENT_SECRET env var)')
+  .option('--max-vods <n>',        'Max VODs per channel (default: same as --max)')
+  .option('--max-clips <n>',       'Max Clips per channel (default: same as --max)')
+  .option('--vod-type <t>',        'VOD type: all | archive | highlight | upload', 'all')
+  .option('--no-vods',             'Skip VODs')
+  .option('--no-clips',            'Skip Clips')
+  .action(async (logins, opts) => {
+    const format    = resolveFormat(opts.format, opts.out);
+    const max       = parseInt(opts.max, 10);
+    const maxVods   = opts.vods  === false ? 0 : parseInt(opts.maxVods  ?? max, 10);
+    const maxClips  = opts.clips === false ? 0 : parseInt(opts.maxClips ?? max, 10);
+    const clientId     = opts.clientId     ?? process.env.TWITCH_CLIENT_ID;
+    const clientSecret = opts.clientSecret ?? process.env.TWITCH_CLIENT_SECRET;
+
+    let results;
+    try {
+      results = await scrapeTwitch(logins.map(l => parseTwitchLogin(l) ?? l), {
+        clientId, clientSecret,
+        maxVods, maxClips,
+        vodType: opts.vodType,
+        debug: opts.debug,
+        since: opts.since, until: opts.until, keyword: opts.keyword,
+      });
+    } catch (err) {
+      console.error(`[ERROR] ${err.message}`);
+      process.exit(1);
+    }
+
+    for (const [login, { profile, videos, clips }] of Object.entries(results)) {
+      const total = videos.length + clips.length;
+      if (!total) { console.log(`No content for ${login}.`); continue; }
+
+      printTwitchStats(profile, videos, clips);
+
+      const outFile = resolveOutputPath(opts.out, login, format);
+      if (outFile) {
+        if (format === 'csv') {
+          if (videos.length) {
+            const vodsFile = outFile.replace(/\.csv$/, '_vods.csv');
+            writeOutput(vodsFile, toTwitchVodsCSV(videos));
+            console.log(`Saved ${videos.length} VODs → ${vodsFile}`);
+          }
+          if (clips.length) {
+            const clipsFile = outFile.replace(/\.csv$/, '_clips.csv');
+            writeOutput(clipsFile, toTwitchClipsCSV(clips));
+            console.log(`Saved ${clips.length} Clips → ${clipsFile}`);
+          }
+        } else {
+          writeOutput(outFile, toTwitchJSON(profile, videos, clips));
+          console.log(`Saved ${total} items → ${outFile}`);
+        }
       } else { console.log('  Use --out <path> to save results.'); }
     }
   });
