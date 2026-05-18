@@ -5006,12 +5006,11 @@ function JobsList({ onNav }) {
 
 // src/tui/screens/DataPreview.js
 import React14, { useState as useState10, useMemo as useMemo3, useEffect as useEffect4 } from "react";
-import { Box as Box13, Text as Text14, useInput as useInput10 } from "ink";
+import { Box as Box13, Text as Text14, useInput as useInput10, useStdout } from "ink";
 import SelectInput6 from "ink-select-input";
 import { readdirSync as readdirSync3, readFileSync as readFileSync6, existsSync as existsSync10 } from "fs";
 import { resolve as resolve13, join as join9, relative as relative2, basename as basename2 } from "path";
 import { jsx as jsx13, jsxs as jsxs14 } from "react/jsx-runtime";
-var PAGE_SIZE2 = 10;
 function extractRecords(data) {
   if (Array.isArray(data)) return data;
   const arr = data.tweets ?? data.videos ?? data.posts ?? data.items ?? data.results ?? data.artworks;
@@ -5047,6 +5046,66 @@ var FIELD_PRIORITY = [
     "metrics.reply_count"
   ]
 ];
+var DETAIL_PRIORITY = [
+  "text",
+  "content",
+  "body",
+  "full_text",
+  "selftext",
+  "title",
+  "author.username",
+  "username",
+  "user",
+  "screen_name",
+  "name",
+  "author.name",
+  "author.followers",
+  "followers",
+  "author.verified",
+  "verified",
+  "created_at",
+  "date",
+  "time",
+  "timestamp",
+  "created",
+  "publishedAt",
+  "url",
+  "link",
+  "permalink",
+  "metrics.likes",
+  "likes",
+  "metrics.like_count",
+  "like_count",
+  "hearts",
+  "digg_count",
+  "metrics.retweets",
+  "retweet_count",
+  "metrics.retweet_count",
+  "metrics.replies",
+  "metrics.reply_count",
+  "reply_count",
+  "metrics.views",
+  "views",
+  "metrics.quotes",
+  "quotes",
+  "metrics.score",
+  "score",
+  "platform",
+  "source",
+  "type",
+  "lang"
+];
+function prioritizeFields(entries) {
+  const order = DETAIL_PRIORITY.map((k) => k.toLowerCase());
+  const result = [];
+  const pool = entries.slice();
+  for (const p of order) {
+    const i = pool.findIndex(([k]) => k.toLowerCase() === p);
+    if (i !== -1) result.push(pool.splice(i, 1)[0]);
+  }
+  result.push(...pool);
+  return result;
+}
 function detectColumns(records) {
   if (!records.length) return [];
   const flat = flattenRecord(records[0]);
@@ -5080,11 +5139,26 @@ function cellValue(rec, col) {
   }
   if (val == null) return "";
   if (typeof val === "object") return JSON.stringify(val).slice(0, 40);
-  return String(val);
+  return String(val).replace(/[\n\r\t]/g, " ");
 }
 function truncate(str, max) {
   if (str.length <= max) return str;
   return str.slice(0, max - 1) + "\u2026";
+}
+function cpWidth(cp) {
+  if (cp < 32 || cp >= 127 && cp <= 159) return 0;
+  if (cp >= 4352 && cp <= 4447 || cp >= 11904 && cp <= 12350 || cp >= 12352 && cp <= 13311 || cp >= 13312 && cp <= 40959 || cp >= 40960 && cp <= 42191 || cp >= 44032 && cp <= 55215 || cp >= 63744 && cp <= 64255 || cp >= 65040 && cp <= 65049 || cp >= 65072 && cp <= 65135 || cp >= 65280 && cp <= 65376 || cp >= 110592 && cp <= 110847 || cp >= 127744 && cp <= 129791 || cp >= 131072 && cp <= 196605) return 2;
+  return 1;
+}
+function truncateByWidth(str, maxCols) {
+  let cols = 0, i = 0;
+  for (const ch of str) {
+    const w = cpWidth(ch.codePointAt(0));
+    if (cols + w > maxCols - 1) return str.slice(0, i) + "\u2026";
+    cols += w;
+    i += ch.length;
+  }
+  return str;
 }
 function Indicator5({ isSelected }) {
   return /* @__PURE__ */ jsx13(Box13, { marginRight: 1, children: isSelected ? /* @__PURE__ */ jsx13(Text14, { color: "cyan", bold: true, children: SYM.cursor }) : /* @__PURE__ */ jsx13(Text14, { children: " " }) });
@@ -5106,8 +5180,7 @@ function scanJsonFilesRecursive2(dir) {
         if (e.isDirectory()) {
           if (e.name !== "classified") walk(join9(d, e.name));
         } else if (e.name.endsWith(".json")) {
-          const full = join9(d, e.name);
-          results.push({ label: relative2(abs, full), value: full });
+          results.push({ label: relative2(abs, join9(d, e.name)), value: join9(d, e.name) });
         }
       }
     };
@@ -5118,16 +5191,91 @@ function scanJsonFilesRecursive2(dir) {
   }
   return results.sort((a, b) => b.label.localeCompare(a.label));
 }
+var KEY_W = 18;
+function RecordDetail({ records, initialIdx, onBack }) {
+  const { stdout } = useStdout();
+  const termRows = stdout?.rows ?? 30;
+  const termCols = stdout?.columns ?? 80;
+  const [idx, setIdx] = useState10(initialIdx);
+  const [scrollTop, setScrollTop] = useState10(0);
+  const record = records[idx];
+  const fields = useMemo3(() => {
+    const flat2 = flattenRecord(record);
+    const entries = Object.entries(flat2).map(([k, v]) => [
+      k,
+      v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v).replace(/[\n\r\t]/g, " ")
+    ]);
+    return prioritizeFields(entries);
+  }, [record]);
+  const visibleCount = Math.max(3, termRows - 11);
+  const maxScroll = Math.max(0, fields.length - visibleCount);
+  useEffect4(() => {
+    setScrollTop(0);
+  }, [idx]);
+  useInput10((_, key) => {
+    if (key.escape) {
+      onBack(idx);
+      return;
+    }
+    if (key.upArrow) setScrollTop((t) => Math.max(0, t - 1));
+    if (key.downArrow) setScrollTop((t) => Math.min(maxScroll, t + 1));
+    if (key.leftArrow && idx > 0) setIdx((i) => i - 1);
+    if (key.rightArrow && idx < records.length - 1) setIdx((i) => i + 1);
+  });
+  const valCols = Math.max(10, termCols - KEY_W - 4);
+  const visible = fields.slice(scrollTop, scrollTop + visibleCount);
+  const needsScroll = fields.length > visibleCount;
+  const flat = useMemo3(() => flattenRecord(record), [record]);
+  const nameVal = flat["author.username"] ?? flat["username"] ?? flat["name"] ?? "";
+  const urlVal = flat["url"] ?? flat["link"] ?? flat["permalink"] ?? "";
+  return /* @__PURE__ */ jsxs14(Box13, { flexDirection: "column", paddingX: 2, paddingY: 1, gap: 1, children: [
+    /* @__PURE__ */ jsxs14(Box13, { gap: 2, children: [
+      /* @__PURE__ */ jsx13(Text14, { bold: true, color: "cyan", children: "\u8BE6\u60C5" }),
+      /* @__PURE__ */ jsxs14(Text14, { color: "gray", dimColor: true, children: [
+        "\u7B2C ",
+        idx + 1,
+        " / ",
+        records.length,
+        " \u6761"
+      ] }),
+      nameVal ? /* @__PURE__ */ jsxs14(Text14, { color: "white", children: [
+        "@",
+        nameVal
+      ] }) : null,
+      /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: "\u2190\u2192\u5207\u6362  ESC\u8FD4\u56DE" })
+    ] }),
+    /* @__PURE__ */ jsxs14(Box13, { gap: 1, children: [
+      /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: "url".padEnd(KEY_W) }),
+      /* @__PURE__ */ jsx13(Text14, { color: "cyan", children: urlVal ? truncateByWidth(urlVal, valCols) : "\u2014" })
+    ] }),
+    /* @__PURE__ */ jsx13(Box13, { flexDirection: "column", children: visible.map(([k, v]) => /* @__PURE__ */ jsxs14(Box13, { gap: 1, children: [
+      /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: truncate(k, KEY_W).padEnd(KEY_W) }),
+      /* @__PURE__ */ jsx13(Text14, { color: "white", wrap: "truncate", children: truncateByWidth(v, valCols) })
+    ] }, k)) }),
+    /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: needsScroll ? `${scrollTop + 1}\u2013${Math.min(scrollTop + visibleCount, fields.length)} / ${fields.length} \u4E2A\u5B57\u6BB5   \u2191\u2193 \u6EDA\u52A8` : `\u5171 ${fields.length} \u4E2A\u5B57\u6BB5` }),
+    /* @__PURE__ */ jsx13(KeyBar, { hints: [
+      { key: "\u2191\u2193", label: "\u6EDA\u52A8\u5B57\u6BB5" },
+      { key: "\u2190\u2192", label: "\u5207\u6362\u8BB0\u5F55" },
+      { key: "ESC", label: "\u8FD4\u56DE\u5217\u8868" }
+    ] })
+  ] });
+}
+var COL_WIDTH = 22;
 function TableView({ records, filePath, onBack }) {
   const [rowIdx, setRowIdx] = useState10(0);
   const [page, setPage] = useState10(0);
+  const [detailIdx, setDetailIdx] = useState10(null);
+  const { stdout } = useStdout();
+  const termRows = stdout?.rows ?? 30;
+  const termCols = stdout?.columns ?? 80;
   const columns = useMemo3(() => detectColumns(records), [records]);
-  const totalPages = Math.max(1, Math.ceil(records.length / PAGE_SIZE2));
-  const pageRows = records.slice(page * PAGE_SIZE2, (page + 1) * PAGE_SIZE2);
-  const totalRows = records.length;
+  const pageSize = Math.min(10, Math.max(3, termRows - 11));
+  const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageRows = records.slice(safePage * pageSize, (safePage + 1) * pageSize);
   useEffect4(() => {
     setRowIdx(0);
-  }, [page]);
+  }, [safePage]);
   useInput10((_, key) => {
     if (key.escape) {
       onBack();
@@ -5135,22 +5283,38 @@ function TableView({ records, filePath, onBack }) {
     }
     if (key.upArrow) setRowIdx((i) => Math.max(0, i - 1));
     if (key.downArrow) setRowIdx((i) => Math.min(pageRows.length - 1, i + 1));
-    if (key.leftArrow && page > 0) {
-      setPage((p) => p - 1);
-    }
-    if (key.rightArrow && page < totalPages - 1) {
-      setPage((p) => p + 1);
+    if (key.leftArrow && safePage > 0) setPage((p) => p - 1);
+    if (key.rightArrow && safePage < totalPages - 1) setPage((p) => p + 1);
+    if (key.return) {
+      const globalIdx = safePage * pageSize + rowIdx;
+      setDetailIdx(globalIdx);
     }
   });
-  const selectedRecord = pageRows[rowIdx];
-  const COL_WIDTH = 22;
+  function handleDetailBack(finalIdx) {
+    const targetPage = Math.floor(finalIdx / pageSize);
+    const targetRowIdx = finalIdx % pageSize;
+    setPage(targetPage);
+    setRowIdx(targetRowIdx);
+    setDetailIdx(null);
+  }
+  if (detailIdx !== null) {
+    return /* @__PURE__ */ jsx13(
+      RecordDetail,
+      {
+        records,
+        initialIdx: detailIdx,
+        onBack: handleDetailBack
+      }
+    );
+  }
+  const tableValCols = Math.max(10, termCols - KEY_W - 6);
   return /* @__PURE__ */ jsxs14(Box13, { flexDirection: "column", paddingX: 2, paddingY: 1, gap: 1, children: [
     /* @__PURE__ */ jsxs14(Box13, { gap: 2, children: [
       /* @__PURE__ */ jsx13(Text14, { bold: true, color: "cyan", children: "\u6570\u636E\u9884\u89C8" }),
       /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: basename2(filePath) }),
       /* @__PURE__ */ jsxs14(Text14, { color: "gray", dimColor: true, children: [
         "\u5171 ",
-        totalRows,
+        records.length,
         " \u6761"
       ] })
     ] }),
@@ -5159,7 +5323,7 @@ function TableView({ records, filePath, onBack }) {
       columns.map((col) => /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: truncate(col, COL_WIDTH).padEnd(COL_WIDTH) }, col))
     ] }),
     /* @__PURE__ */ jsx13(Box13, { flexDirection: "column", children: pageRows.map((rec, i) => {
-      const globalN = page * PAGE_SIZE2 + i + 1;
+      const globalN = safePage * pageSize + i + 1;
       const isCursor = i === rowIdx;
       return /* @__PURE__ */ jsxs14(Box13, { gap: 1, children: [
         /* @__PURE__ */ jsxs14(Text14, { color: isCursor ? "cyan" : "gray", children: [
@@ -5178,30 +5342,9 @@ function TableView({ records, filePath, onBack }) {
         ))
       ] }, i);
     }) }),
-    selectedRecord && /* @__PURE__ */ jsxs14(
-      Box13,
-      {
-        flexDirection: "column",
-        borderStyle: "round",
-        borderColor: "cyan",
-        paddingX: 2,
-        paddingY: 0,
-        marginTop: 1,
-        children: [
-          /* @__PURE__ */ jsxs14(Text14, { bold: true, color: "cyan", children: [
-            "\u8BE6\u60C5  \u884C ",
-            page * PAGE_SIZE2 + rowIdx + 1
-          ] }),
-          columns.map((col) => /* @__PURE__ */ jsxs14(Box13, { gap: 2, children: [
-            /* @__PURE__ */ jsx13(Text14, { color: "gray", dimColor: true, children: col.padEnd(20) }),
-            /* @__PURE__ */ jsx13(Text14, { color: "white", wrap: "truncate", children: truncate(cellValue(selectedRecord, col), 80) })
-          ] }, col))
-        ]
-      }
-    ),
     /* @__PURE__ */ jsx13(Box13, { gap: 2, children: /* @__PURE__ */ jsxs14(Text14, { color: "gray", dimColor: true, children: [
       "\u7B2C ",
-      page + 1,
+      safePage + 1,
       " / ",
       totalPages,
       " \u9875"
@@ -5209,6 +5352,7 @@ function TableView({ records, filePath, onBack }) {
     /* @__PURE__ */ jsx13(KeyBar, { hints: [
       { key: "\u2191\u2193", label: "\u9009\u62E9\u884C" },
       { key: "\u2190\u2192", label: "\u7FFB\u9875" },
+      { key: "Enter", label: "\u67E5\u770B\u8BE6\u60C5" },
       { key: "ESC", label: "\u8FD4\u56DE" }
     ] })
   ] });
@@ -5228,8 +5372,7 @@ function DataPreview({ initialFile, onNav }) {
     try {
       const raw = readFileSync6(selectedFile, "utf-8");
       const data = JSON.parse(raw);
-      const arr = extractRecords(data);
-      setRecords(arr);
+      setRecords(extractRecords(data));
       setLoadError("");
     } catch (e) {
       setLoadError(e.message);
