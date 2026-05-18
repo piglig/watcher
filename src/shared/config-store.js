@@ -36,4 +36,5 @@ export function applyToEnv() {
   const cfg = load();
   if (cfg.openaiKey  && !process.env.OPENAI_API_KEY)  process.env.OPENAI_API_KEY  = cfg.openaiKey;
   if (cfg.youtubeKey && !process.env.YOUTUBE_API_KEY) process.env.YOUTUBE_API_KEY = cfg.youtubeKey;
+  if (cfg.xaiKey     && !process.env.XAI_API_KEY)     process.env.XAI_API_KEY     = cfg.xaiKey;
 }

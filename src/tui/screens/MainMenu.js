@@ -6,6 +6,16 @@ import { SYM } from '../theme.js';
 
 const ITEMS = [
   {
+    label: '调查 KOL（一键流水线）',
+    value: 'workflow',
+    desc:  'OSINT → 采集 → 分类 → Markdown 报告，单 KOL 端到端调查',
+  },
+  {
+    label: '调查任务列表',
+    value: 'workflow-list',
+    desc:  '查看进行中 / 已完成的调查任务，恢复中断的流水线',
+  },
+  {
     label: '采集内容',
     value: 'scrape',
     desc:  '从 Twitter、TikTok、Reddit 等平台批量采集帖子，支持多平台同时采集',
@@ -14,6 +24,11 @@ const ITEMS = [
     label: 'AI 风险分类',
     value: 'classify',
     desc:  '使用 OpenAI Batch API 对帖子进行多维度风险评分',
+  },
+  {
+    label: 'OSINT 社媒追踪',
+    value: 'osint',
+    desc:  '基于 Grok 4.3 批处理 API（web_search + x_search）挖掘 KOL 全网账号足迹',
   },
   {
     label: '预览采集数据',
@@ -63,11 +78,14 @@ export default function MainMenu({ onNav }) {
   const handleSelect = ({ value }) => {
     if (value === 'quit') { exit(); return; }
     onNav(
-      value === 'scrape'    ? 'scrape-setup'
-    : value === 'classify'  ? 'classify-setup'
-    : value === 'preview'   ? 'data-preview'
-    : value === 'jobs'      ? 'jobs'
-    : value === 'settings'  ? 'settings'
+      value === 'workflow'      ? 'workflow-setup'
+    : value === 'workflow-list' ? 'workflow-list'
+    : value === 'scrape'        ? 'scrape-setup'
+    : value === 'classify'      ? 'classify-setup'
+    : value === 'osint'         ? 'osint-setup'
+    : value === 'preview'       ? 'data-preview'
+    : value === 'jobs'          ? 'jobs'
+    : value === 'settings'      ? 'settings'
     : 'menu'
     );
   };

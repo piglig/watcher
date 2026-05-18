@@ -14,6 +14,20 @@ node_modules/
 debug_response.json
 debug_threads_response.json
 
+# Pipeline outputs
+out/
+dist/
+.tmp-classify-*.jsonl
+.tmp-osint-*.jsonl
+
+# Local sandbox / scratch
+plans/
+*.local.md
+
+# Claude Code per-machine settings (never commit; may contain secrets from
+# debug commands stored in the allowlist)
+.claude/settings.local.json
+
 # Environment
 .env
 .env.local

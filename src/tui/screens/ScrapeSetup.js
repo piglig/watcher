@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import SelectInput from 'ink-select-input';
@@ -9,8 +9,9 @@ import { SYM } from '../theme.js';
 import { PLATFORMS } from '../runner.js';
 import { getConfig } from '../../shared/config-store.js';
 import { readFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
 import { homedir } from 'os';
+import { loadOsintDir, extractScrapeTargets, listOsintResultDirs } from '../../osint/index.js';
 
 const PLATFORM_ITEMS = PLATFORMS.map(p => ({ label: p.label, value: p.value }));
 
@@ -90,6 +91,16 @@ function buildSteps(platforms) {
   return steps;
 }
 
+function buildImportNote(prefill) {
+  const platformCount = Object.keys(prefill?.targets ?? {}).length;
+  const handleCount   = Object.values(prefill?.targets ?? {}).reduce((s, a) => s + a.length, 0);
+  const ignored       = prefill?.ignoredCount ?? 0;
+  let note = `从 OSINT 导入：${platformCount} 个平台 / ${handleCount} 个账号`;
+  if (ignored > 0) note += ` · 忽略 ${ignored} 个账号（未支持平台）`;
+  if (prefill?.sourceDir) note += ` · 来源：${prefill.sourceDir}`;
+  return note;
+}
+
 function Indicator({ isSelected }) {
   return (
     <Box marginRight={1}>
@@ -101,19 +112,53 @@ function Item({ label, isSelected }) {
   return <Text color={isSelected ? 'white' : 'gray'}>{label}</Text>;
 }
 
-export default function ScrapeSetup({ onNav }) {
-  const [selectedPlatforms, setSelectedPlatforms] = useState([]);
-  const [config, setConfig]   = useState({});
-  const [stepIdx, setStepIdx] = useState(0);
+// Source-mode picker shown before the regular flow when no prefill provided.
+const SOURCE_ITEMS = [
+  { label: '手动输入目标',         value: 'manual' },
+  { label: '从 OSINT 结果导入',     value: 'osint'  },
+];
+
+export default function ScrapeSetup({ onNav, prefill }) {
+  // Phase: 'source' → choose manual vs OSINT-import (only when no prefill)
+  //        'osint-pick' → pick which OSINT result dir to import
+  //        'flow'   → normal step-by-step flow
+  const initialPhase = prefill ? 'flow' : 'source';
+
+  const [phase, setPhase]                         = useState(initialPhase);
+  const [selectedPlatforms, setSelectedPlatforms] = useState(
+    prefill ? Object.keys(prefill.targets ?? {}) : []
+  );
+  const [config, setConfig] = useState(() => {
+    if (!prefill?.targets) return {};
+    const out = {};
+    for (const [pv, handles] of Object.entries(prefill.targets)) {
+      out[`targets_${pv}`] = handles.join(',');
+    }
+    return out;
+  });
+  // When prefill exists, skip the platform-selection step (index 0).
+  const [stepIdx, setStepIdx] = useState(prefill ? 1 : 0);
   const [draft,   setDraft]   = useState('');
+  const [importNote, setImportNote] = useState(
+    prefill ? buildImportNote(prefill) : ''
+  );
 
   const steps      = useMemo(() => buildSteps(selectedPlatforms), [selectedPlatforms]);
   const step       = steps[stepIdx];
   const stepLabels = steps.map(s => s.short);
 
+  // Prime draft from existing config when entering a text step (used for
+  // prefilled OSINT-import flow so Enter doesn't blank the targets).
+  useEffect(() => {
+    if (phase !== 'flow') return;
+    if (step?.type === 'text' && config[step.key]) setDraft(config[step.key]);
+  }, [stepIdx, phase]); // eslint-disable-line
+
   useInput((_, key) => {
     if (!key.escape) return;
-    if (stepIdx === 0) { onNav('menu'); return; }
+    if (phase === 'osint-pick') { setPhase('source'); return; }
+    if (phase === 'source') { onNav('menu'); return; }
+    if (stepIdx === 0)      { onNav('menu'); return; }
     setStepIdx(i => i - 1);
     setDraft('');
   });
@@ -164,6 +209,72 @@ export default function ScrapeSetup({ onNav }) {
     }
   };
 
+  // ── Phase: source picker ────────────────────────────────────────────────
+  if (phase === 'source') {
+    return (
+      <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
+        <Text bold color="cyan">采集设置</Text>
+        <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={0} gap={1} marginTop={1}>
+          <Text bold color="cyan">选择数据源</Text>
+          <SelectInput
+            items={SOURCE_ITEMS}
+            onSelect={({ value }) => {
+              if (value === 'manual') setPhase('flow');
+              else                    setPhase('osint-pick');
+            }}
+            indicatorComponent={Indicator}
+            itemComponent={Item}
+          />
+        </Box>
+        <KeyBar hints={[{ key: 'Enter', label: '确认' }, { key: 'ESC', label: '返回菜单' }]} />
+      </Box>
+    );
+  }
+
+  // ── Phase: OSINT result directory picker ────────────────────────────────
+  if (phase === 'osint-pick') {
+    const baseDir = join(getConfig().outDir || './out/', 'osint');
+    const dirs    = listOsintResultDirs(baseDir);
+
+    return (
+      <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
+        <Text bold color="cyan">采集设置 — 选择 OSINT 结果</Text>
+        <Text color="gray" dimColor>扫描目录：{baseDir}</Text>
+        <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={2} paddingY={0} gap={1} marginTop={1}>
+          {dirs.length === 0 ? (
+            <Text color="gray" dimColor>未找到带 _summary.json 的 OSINT 结果目录</Text>
+          ) : (
+            <SelectInput
+              items={dirs.map(d => ({ label: d.name, value: d.path }))}
+              onSelect={({ value }) => {
+                const kols    = loadOsintDir(value);
+                const extract = extractScrapeTargets(kols);
+                const pvs     = Object.keys(extract.targets);
+                if (pvs.length === 0) {
+                  setImportNote(`${SYM.warn} 该结果没有可映射到采集平台的账号（忽略 ${extract.ignoredCount} 个）`);
+                  return;
+                }
+                const cfg = {};
+                for (const [pv, handles] of Object.entries(extract.targets)) {
+                  cfg[`targets_${pv}`] = handles.join(',');
+                }
+                setSelectedPlatforms(pvs);
+                setConfig(cfg);
+                setImportNote(buildImportNote({ ...extract, sourceDir: value }));
+                setStepIdx(1);            // skip platform-multi-select
+                setPhase('flow');
+              }}
+              indicatorComponent={Indicator}
+              itemComponent={Item}
+            />
+          )}
+          {importNote && <Text color="yellow">{importNote}</Text>}
+        </Box>
+        <KeyBar hints={[{ key: 'Enter', label: '选择' }, { key: 'ESC', label: '上一步' }]} />
+      </Box>
+    );
+  }
+
   if (!step) return null;
 
   const doneSteps = steps.slice(0, stepIdx);
@@ -171,6 +282,12 @@ export default function ScrapeSetup({ onNav }) {
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
       <Text bold color="cyan">采集设置</Text>
+
+      {importNote && (
+        <Box borderStyle="round" borderColor="yellow" borderDimColor paddingX={2}>
+          <Text color="yellow">{SYM.info} {importNote}</Text>
+        </Box>
+      )}
 
       <StepBar steps={stepLabels} current={stepIdx} />
 

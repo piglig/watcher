@@ -15,13 +15,14 @@ const MODEL_ITEMS = [
 ];
 
 const STEPS = [
-  { key: 'openaiKey',  label: 'OpenAI API Key',  hint: '以 sk- 开头；留空保持现有值不变', mask: true,  type: 'text'   },
-  { key: 'youtubeKey', label: 'YouTube API Key', hint: '仅采集 YouTube 时需要；留空跳过', mask: true,  type: 'text'   },
-  { key: 'outDir',     label: '默认输出目录',                                               mask: false, type: 'dir'    },
-  { key: 'model',      label: '默认 AI 模型',                                               mask: false, type: 'select', items: MODEL_ITEMS },
+  { key: 'openaiKey',  label: 'OpenAI API Key',  hint: '以 sk- 开头；留空保持现有值不变',     mask: true,  type: 'text'   },
+  { key: 'xaiKey',     label: 'xAI API Key',     hint: '以 xai- 开头；OSINT 功能需要；留空跳过', mask: true,  type: 'text'   },
+  { key: 'youtubeKey', label: 'YouTube API Key', hint: '仅采集 YouTube 时需要；留空跳过',     mask: true,  type: 'text'   },
+  { key: 'outDir',     label: '默认输出目录',                                                  mask: false, type: 'dir'    },
+  { key: 'model',      label: '默认 AI 模型',                                                  mask: false, type: 'select', items: MODEL_ITEMS },
 ];
 
-const STEP_LABELS = ['OpenAI', 'YouTube', '目录', '模型'];
+const STEP_LABELS = ['OpenAI', 'xAI', 'YouTube', '目录', '模型'];
 
 function maskValue(val) {
   if (!val || val.length <= 8) return '••••••••';
@@ -35,6 +36,7 @@ export default function Settings({ onNav }) {
   const [draft,   setDraft]   = useState('');
   const [values,  setValues]  = useState({
     openaiKey:  saved.openaiKey  ?? '',
+    xaiKey:     saved.xaiKey     ?? '',
     youtubeKey: saved.youtubeKey ?? '',
     outDir:     saved.outDir     ?? '',
     model:      saved.model      ?? '',
@@ -71,12 +73,14 @@ export default function Settings({ onNav }) {
     if (stepIdx + 1 >= STEPS.length) {
       const toSave = {};
       if (next.openaiKey)  toSave.openaiKey  = next.openaiKey;
+      if (next.xaiKey)     toSave.xaiKey     = next.xaiKey;
       if (next.youtubeKey) toSave.youtubeKey = next.youtubeKey;
       if (next.outDir)     toSave.outDir     = next.outDir;
       if (next.model)      toSave.model      = next.model;
 
       const cfg = setConfig(toSave);
       if (cfg.openaiKey)  process.env.OPENAI_API_KEY  = cfg.openaiKey;
+      if (cfg.xaiKey)     process.env.XAI_API_KEY     = cfg.xaiKey;
       if (cfg.youtubeKey) process.env.YOUTUBE_API_KEY = cfg.youtubeKey;
 
       onNav('menu');

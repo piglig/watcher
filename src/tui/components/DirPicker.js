@@ -63,7 +63,10 @@ export default function DirPicker({ initial = '.', onConfirm }) {
       if (!item) return;
 
       if (item.type === 'confirm') {
-        mkdirSync(currentPath, { recursive: true });
+        // Drive roots (D:\) already exist and reject mkdir with EPERM on Windows.
+        if (!isRoot(currentPath)) {
+          try { mkdirSync(currentPath, { recursive: true }); } catch {}
+        }
         onConfirm(currentPath);
       } else if (item.type === 'new-folder') {
         setCreating(true);

@@ -104,6 +104,7 @@ export async function runClassify(config, onLog = () => {}) {
     onLog(`批次已提交：${newId}`);
     saveBatch({
       id:          newId,
+      kind:        'classify',
       model,
       post_count:  llmPosts.length,
       input_files: inputFiles,
