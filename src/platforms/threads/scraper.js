@@ -16,8 +16,15 @@ import {
 
 const DESKTOP_VIEWPORT = { width: 1280, height: 900 };
 
+// 登录阶段：放行所有资源，确保验证码 / 设备验证图片正常加载
+async function setupLoginPage(context) {
+  const page = await context.newPage();
+  await page.setViewportSize(DESKTOP_VIEWPORT);
+  return page;
+}
+
+// 抓取阶段：仅拦截图片 / 媒体（不拦截 CSS/字体，Threads 渲染依赖它们）
 async function setupDesktopPage(context) {
-  // Do NOT use shared setupPage —it blocks stylesheets/fonts which breaks Threads rendering.
   const page = await context.newPage();
   await page.route('**/*', route => {
     const type = route.request().resourceType();
@@ -412,7 +419,7 @@ export async function scrapeThreads(usernames, opts = {}) {
   });
 
   try {
-    const checkPage = await setupDesktopPage(context);
+    const checkPage = await setupLoginPage(context);
     await checkPage.goto('https://www.threads.com', {
       waitUntil: 'domcontentloaded', timeout: 60_000,
     });

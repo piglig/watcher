@@ -2,12 +2,7 @@
 node_modules/
 
 # Login sessions (contain auth cookies — never commit)
-.session/
-.session-twitter/
-.session-threads/
-.session-pixiv/
-.session-naver/
-.session-tiktok/
+.session*
 
 # Scraper output & temp files
 *.progress.json

@@ -9,8 +9,9 @@
  *   sns-audit threads <username...> [options]
  *   sns-audit pixiv   <target...>   [options]
  *   sns-audit naver   <url...>      [options]
- *   sns-audit youtube <target...>   [options]
- *   sns-audit classify              [options]
+ *   sns-audit youtube    <target...>   [options]
+ *   sns-audit instagram  <username...> [options]
+ *   sns-audit classify               [options]
  */
 
 import { program } from 'commander';
@@ -39,6 +40,9 @@ import { printNaverStats, toNaverJSON, toNaverCSV } from '../src/platforms/naver
 
 import { scrapeYouTube, parseYouTubeChannel } from '../src/platforms/youtube/index.js';
 import { printYouTubeStats, toYouTubeJSON, toYouTubeCSV } from '../src/platforms/youtube/index.js';
+
+import { scrapeInstagram, parseInstagramUsername } from '../src/platforms/instagram/index.js';
+import { printInstagramStats, toInstagramJSON, toInstagramCSV } from '../src/platforms/instagram/index.js';
 
 import { submitBatch, fetchBatchResults, aggregateUserRisk } from '../src/classifier/index.js';
 import { applyRulesAll }            from '../src/classifier/index.js';
@@ -354,6 +358,43 @@ youtubeCmd
       if (outFile) {
         writeOutput(outFile, format === 'csv' ? toYouTubeCSV(videos) : toYouTubeJSON(profile, videos));
         console.log(`Saved ${videos.length} videos → ${outFile}`);
+      } else { console.log('  Use --out <path> to save results.'); }
+    }
+  });
+
+// ── instagram ─────────────────────────────────────────────────────────────────
+
+const instagramCmd = program.command('instagram <username...>')
+  .description('Scrape Instagram user posts and reels');
+
+addCommonScrapeOptions(instagramCmd);
+addBrowserOptions(instagramCmd);
+instagramCmd
+  .option('--no-reels', 'Skip the Reels tab')
+  .action(async (usernames, opts) => {
+    const format = resolveFormat(opts.format, opts.out);
+    const max    = parseInt(opts.max, 10);
+
+    let results;
+    try {
+      results = await scrapeInstagram(usernames.map(u => parseInstagramUsername(u) ?? u), {
+        max, headed: opts.headed, debug: opts.debug,
+        since: opts.since, until: opts.until, keyword: opts.keyword,
+        resetSession: opts.resetSession,
+        reels: opts.reels !== false,
+      });
+    } catch (err) {
+      console.error(`[ERROR] ${err.message}`);
+      process.exit(1);
+    }
+
+    for (const [username, { profile, posts }] of Object.entries(results)) {
+      if (!posts.length) { console.log(`No posts for @${username}.`); continue; }
+      printInstagramStats(profile, posts);
+      const outFile = resolveOutputPath(opts.out, username, format);
+      if (outFile) {
+        writeOutput(outFile, format === 'csv' ? toInstagramCSV(posts) : toInstagramJSON(profile, posts));
+        console.log(`Saved ${posts.length} posts → ${outFile}`);
       } else { console.log('  Use --out <path> to save results.'); }
     }
   });

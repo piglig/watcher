@@ -13,6 +13,7 @@
     "./pixiv": "./src/platforms/pixiv/index.js",
     "./naver": "./src/platforms/naver/index.js",
     "./youtube": "./src/platforms/youtube/index.js",
+    "./instagram": "./src/platforms/instagram/index.js",
     "./classify": "./src/classifier/index.js"
   },
   "bin": {

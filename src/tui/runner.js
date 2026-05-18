@@ -20,6 +20,8 @@ import { scrapeNaver }                from '../platforms/naver/index.js';
 import { toNaverJSON }                from '../platforms/naver/index.js';
 import { scrapeYouTube }              from '../platforms/youtube/index.js';
 import { toYouTubeJSON }              from '../platforms/youtube/index.js';
+import { scrapeInstagram, parseInstagramUsername } from '../platforms/instagram/index.js';
+import { toInstagramJSON }            from '../platforms/instagram/index.js';
 
 // ── Platform metadata (used by ScrapeSetup wizard) ────────────────────────────
 
@@ -58,6 +60,11 @@ export const PLATFORMS = [
     value: 'youtube',  label: 'YouTube',
     needsBrowser: false, needsApiKey: true,
     targetsLabel: '频道', targetsHint: '@handle 或频道 URL，多个用逗号分隔',
+  },
+  {
+    value: 'instagram', label: 'Instagram',
+    needsBrowser: true,
+    targetsLabel: '用户名', targetsHint: '@username，多个用逗号分隔',
   },
 ];
 
@@ -185,6 +192,14 @@ export async function runScrape(config) {
       if (!videos.length) continue;
       const name = (profile?.handle ?? target).replace(/[@/]/g, '');
       save(`${stamp}_${name}.json`, toYouTubeJSON(profile, videos), videos.length, profile?.title ?? target);
+    }
+
+  } else if (platform === 'instagram') {
+    const parsed  = targets.map(t => parseInstagramUsername(t) ?? t);
+    const results = await scrapeInstagram(parsed, opts);
+    for (const [username, { profile, posts }] of Object.entries(results)) {
+      if (!posts.length) continue;
+      save(`${stamp}_${username}.json`, toInstagramJSON(profile, posts), posts.length, `@${username}`);
     }
   }
 

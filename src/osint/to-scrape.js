@@ -20,7 +20,8 @@ const PLATFORM_ALIASES = {
   threads: ['threads'],
   pixiv:   ['pixiv'],
   naver:   ['naver', 'naver café', 'naver cafe', 'naver blog'],
-  youtube: ['youtube'],
+  youtube:   ['youtube'],
+  instagram: ['instagram'],
 };
 
 function resolvePlatform(rawPlatform) {
@@ -85,6 +86,10 @@ function normalizeHandle(scrapeId, account) {
       if (url && /^https?:\/\/(www\.)?youtube\.com\//i.test(url)) return url;
       if (h) return `@${h.replace(/^@/, '')}`;
       return null;
+    }
+    case 'instagram': {
+      const h = stripAt(handle_id) || pickFromUrl(url, /instagram\.com\/([A-Za-z0-9_.]+)/i);
+      return h || null;
     }
     default:
       return null;

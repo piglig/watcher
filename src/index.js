@@ -49,6 +49,12 @@ export {
   toNaverJSON, toNaverCSV,
 } from './platforms/naver/index.js';
 
+// ── Instagram ─────────────────────────────────────────────────────────────────
+export {
+  scrapeInstagram, scrapeInstagramUser, parseInstagramUsername,
+  toInstagramJSON, toInstagramCSV,
+} from './platforms/instagram/index.js';
+
 // ── YouTube ───────────────────────────────────────────────────────────────────
 export {
   scrapeYouTube, scrapeYouTubeChannel, parseYouTubeChannel,

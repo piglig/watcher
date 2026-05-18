@@ -124,6 +124,21 @@ const NORMALIZERS = {
     };
   },
 
+  instagram(p) {
+    return {
+      ...p,
+      author: {
+        id:       p.author?.id       ?? null,
+        username: p.author?.username ?? null,
+        name:     p.author?.name     ?? null,
+      },
+      media:   (p.media ?? []).map(m => ({ type: m.type, url: m.url })),
+      rt_from: null,
+      tags:    [],
+      is_r18:  false,
+    };
+  },
+
   youtube(p) {
     return {
       ...p,
