@@ -10,13 +10,13 @@
  */
 
 import { resolve }             from 'path';
-import { createInterface }     from 'readline';
+import { waitForLoginSignal }   from '../../shared/login-signal.js';
 import {
   createBrowser,
   clearSession, sessionExists,
 }                              from '../../shared/browser.js';
 
-export const DEFAULT_SESSION_DIR = resolve('.session-pixiv');
+export const DEFAULT_SESSION_DIR = resolve('sessions/pixiv');
 
 const BATCH_SIZE  = 10;  // concurrent /ajax/illust/{id} requests per round
 const BATCH_DELAY = 400; // ms between rounds
@@ -99,21 +99,8 @@ async function waitForPixivLogin(page) {
       if (await isLoggedInPixiv(page)) finish(true);
     }, 1500);
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('', async () => {
-      rl.close();
-      if (done) return;
-      const ok = await isLoggedInPixiv(page);
-      if (!ok) {
-        console.log('\n  Not logged in yet —still waiting (press Enter again after login)...');
-        const rl2 = createInterface({ input: process.stdin, output: process.stdout });
-        rl2.question('', async () => {
-          rl2.close();
-          finish(await isLoggedInPixiv(page));
-        });
-        return;
-      }
-      finish(true);
+    waitForLoginSignal().then(async () => {
+      if (!done && await isLoggedInPixiv(page)) finish(true);
     });
 
     const timer = setTimeout(() => finish(false), 180_000);

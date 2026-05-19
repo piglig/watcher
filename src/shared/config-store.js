@@ -34,7 +34,11 @@ export function setConfig(updates) {
 /** 将已保存的 API Key 注入 process.env（不覆盖已有的环境变量） */
 export function applyToEnv() {
   const cfg = load();
-  if (cfg.openaiKey  && !process.env.OPENAI_API_KEY)  process.env.OPENAI_API_KEY  = cfg.openaiKey;
-  if (cfg.youtubeKey && !process.env.YOUTUBE_API_KEY) process.env.YOUTUBE_API_KEY = cfg.youtubeKey;
-  if (cfg.xaiKey     && !process.env.XAI_API_KEY)     process.env.XAI_API_KEY     = cfg.xaiKey;
+  if (cfg.openaiKey          && !process.env.OPENAI_API_KEY)       process.env.OPENAI_API_KEY       = cfg.openaiKey;
+  if (cfg.youtubeKey         && !process.env.YOUTUBE_API_KEY)      process.env.YOUTUBE_API_KEY      = cfg.youtubeKey;
+  if (cfg.xaiKey             && !process.env.XAI_API_KEY)          process.env.XAI_API_KEY          = cfg.xaiKey;
+  if (cfg.blueskyIdentifier  && !process.env.BLUESKY_IDENTIFIER)   process.env.BLUESKY_IDENTIFIER   = cfg.blueskyIdentifier;
+  if (cfg.blueskyAppPassword && !process.env.BLUESKY_APP_PASSWORD) process.env.BLUESKY_APP_PASSWORD = cfg.blueskyAppPassword;
+  if (cfg.twitchClientId     && !process.env.TWITCH_CLIENT_ID)     process.env.TWITCH_CLIENT_ID     = cfg.twitchClientId;
+  if (cfg.twitchClientSecret && !process.env.TWITCH_CLIENT_SECRET) process.env.TWITCH_CLIENT_SECRET = cfg.twitchClientSecret;
 }

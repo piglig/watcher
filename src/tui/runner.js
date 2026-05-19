@@ -24,6 +24,8 @@ import { scrapeInstagram, parseInstagramUsername } from '../platforms/instagram/
 import { toInstagramJSON }            from '../platforms/instagram/index.js';
 import { scrapeTwitch, parseTwitchLogin } from '../platforms/twitch/index.js';
 import { toTwitchJSON }               from '../platforms/twitch/index.js';
+import { scrapeBluesky, parseBlueskyHandle } from '../platforms/bluesky/index.js';
+import { toBlueskyJSON }              from '../platforms/bluesky/index.js';
 
 // ── Platform metadata (used by ScrapeSetup wizard) ────────────────────────────
 
@@ -73,6 +75,11 @@ export const PLATFORMS = [
     needsBrowser: false, needsApiKey: true,
     targetsLabel: '频道名', targetsHint: '@login 或 twitch.tv/xxx，多个用逗号分隔',
   },
+  {
+    value: 'bluesky', label: 'Bluesky',
+    needsBrowser: false, needsApiKey: true,
+    targetsLabel: '账号', targetsHint: 'handle（如 user.bsky.social），多个用逗号分隔',
+  },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -118,6 +125,8 @@ export async function runScrape(config) {
     redditSource        = 'arctic',
     twitchClientId      = process.env.TWITCH_CLIENT_ID,
     twitchClientSecret  = process.env.TWITCH_CLIENT_SECRET,
+    blueskyIdentifier   = process.env.BLUESKY_IDENTIFIER,
+    blueskyAppPassword  = process.env.BLUESKY_APP_PASSWORD,
     outDir   = './out/',
   } = config;
 
@@ -220,6 +229,18 @@ export async function runScrape(config) {
       const total = videos.length + clips.length;
       if (!total) continue;
       save(`${stamp}_${login}.json`, toTwitchJSON(profile, videos, clips), total, login);
+    }
+
+  } else if (platform === 'bluesky') {
+    const parsed  = targets.map(t => parseBlueskyHandle(t) ?? t);
+    const results = await scrapeBluesky(parsed, {
+      ...opts,
+      identifier:  blueskyIdentifier,
+      appPassword: blueskyAppPassword,
+    });
+    for (const [handle, { profile, posts }] of Object.entries(results)) {
+      if (!posts.length) continue;
+      save(`${stamp}_${handle}.json`, toBlueskyJSON(profile, posts), posts.length, `@${handle}`);
     }
   }
 

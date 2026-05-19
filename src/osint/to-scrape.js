@@ -23,6 +23,7 @@ const PLATFORM_ALIASES = {
   youtube:   ['youtube'],
   instagram: ['instagram'],
   twitch:    ['twitch'],
+  bluesky:   ['bluesky', 'bsky', 'bluesky (bsky)'],
 };
 
 function resolvePlatform(rawPlatform) {
@@ -95,6 +96,10 @@ function normalizeHandle(scrapeId, account) {
     case 'twitch': {
       const h = stripAt(handle_id) || pickFromUrl(url, /twitch\.tv\/([A-Za-z0-9_]+)/i);
       return h ? h.toLowerCase() : null;
+    }
+    case 'bluesky': {
+      const h = stripAt(handle_id) || pickFromUrl(url, /bsky\.app\/profile\/([\w.\-@]+)/i);
+      return h ? h.replace(/^@/, '') : null;
     }
     default:
       return null;

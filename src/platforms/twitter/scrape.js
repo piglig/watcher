@@ -177,7 +177,7 @@ export async function scrape(usernames, opts = {}) {
     headed       = false,
     debug        = false,
     resetSession = false,
-    sessionDir   = resolve('.session-twitter'),
+    sessionDir   = resolve('sessions/twitter'),
     ...userOpts
   } = opts;
 

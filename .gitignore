@@ -3,6 +3,7 @@ node_modules/
 
 # Login sessions (contain auth cookies — never commit)
 .session*
+sessions*
 
 # Scraper output & temp files
 *.progress.json

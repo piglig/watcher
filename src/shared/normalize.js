@@ -155,6 +155,26 @@ const NORMALIZERS = {
     };
   },
 
+  bluesky(p) {
+    return {
+      ...p,
+      author: {
+        id:       p.author?.id       ?? null,
+        username: p.author?.username ?? null,
+        name:     p.author?.name     ?? null,
+      },
+      media:   (p.media ?? []).map(m => ({
+        type: m.type === 'image' ? 'photo' : m.type,
+        url:  m.url ?? '',
+      })).filter(m => m.url),
+      rt_from: p.type === 'repost' && p.repost_by
+        ? { username: p.repost_by.username }
+        : null,
+      tags:    p.tags   ?? [],
+      is_r18:  p.is_r18 ?? false,
+    };
+  },
+
   youtube(p) {
     return {
       ...p,

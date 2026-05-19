@@ -8,7 +8,7 @@
 
 import { resolve }                          from 'path';
 import { writeFileSync }                    from 'fs';
-import { createInterface }                  from 'readline';
+import { waitForLoginSignal }               from '../../shared/login-signal.js';
 import {
   createBrowser,
   clearSession, sessionExists,
@@ -35,7 +35,7 @@ async function setupDesktopPage(context) {
   return page;
 }
 
-export const DEFAULT_SESSION_DIR = resolve('.session-threads');
+export const DEFAULT_SESSION_DIR = resolve('sessions/threads');
 
 // ── Username parsing ──────────────────────────────────────────────────────────
 
@@ -80,22 +80,9 @@ async function waitForThreadsLogin(page) {
       if (await isLoggedInThreads(page)) finish(true);
     }, 1500);
 
-    // Manual confirm: user presses Enter —then verify login actually happened
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('', async () => {
-      rl.close();
-      if (done) return;
-      const ok = await isLoggedInThreads(page);
-      if (!ok) {
-        console.log('\n  Not logged in yet —still waiting (press Enter again after login)...');
-        const rl2 = createInterface({ input: process.stdin, output: process.stdout });
-        rl2.question('', async () => {
-          rl2.close();
-          finish(await isLoggedInThreads(page));
-        });
-        return;
-      }
-      finish(true);
+    // Manual confirm: TUI user presses Enter
+    waitForLoginSignal().then(async () => {
+      if (!done && await isLoggedInThreads(page)) finish(true);
     });
 
     // Hard timeout at 3 minutes

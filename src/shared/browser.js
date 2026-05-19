@@ -6,7 +6,7 @@
 import { launchPersistentContext } from 'cloakbrowser';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
-import { createInterface } from 'readline';
+import { waitForLoginSignal } from './login-signal.js';
 
 // ── Resource types to block (not needed for scraping) ──────────────────────
 const BLOCKED_TYPES = new Set(['image', 'stylesheet', 'font', 'media']);
@@ -94,11 +94,8 @@ export async function waitForLogin(page, username) {
       return false;
     })(),
 
-    // Manual fallback: user presses Enter
-    new Promise(res => {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      rl.question('', () => { rl.close(); res(true); });
-    }),
+    // Manual fallback: TUI user presses Enter
+    waitForLoginSignal().then(() => true),
   ]);
 
   return success;

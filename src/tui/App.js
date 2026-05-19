@@ -12,6 +12,7 @@ import OsintRun      from './screens/OsintRun.js';
 import WorkflowSetup from './screens/WorkflowSetup.js';
 import WorkflowRun   from './screens/WorkflowRun.js';
 import WorkflowList  from './screens/WorkflowList.js';
+import PipelineRun   from './screens/PipelineRun.js';
 import JobsList      from './screens/JobsList.js';
 import DataPreview   from './screens/DataPreview.js';
 
@@ -27,6 +28,7 @@ const SUBTITLES = {
   'workflow-setup': '调查 KOL — 新建任务',
   'workflow-run':   '调查 KOL — 任务运行',
   'workflow-list':  '调查任务列表',
+  'pipeline-run':   '采集并分析',
   jobs:             '分类任务列表',
   'data-preview':   '数据预览',
 };
@@ -46,7 +48,7 @@ export default function App() {
       <Header subtitle={SUBTITLES[screen]} />
       {screen === 'menu'           && <MainMenu       onNav={onNav} />}
       {screen === 'settings'       && <Settings       onNav={onNav} />}
-      {screen === 'scrape-setup'   && <ScrapeSetup    prefill={navParams.scrapePrefill} onNav={onNav} />}
+      {screen === 'scrape-setup'   && <ScrapeSetup    prefill={navParams.scrapePrefill} pipelineMode={navParams.pipelineMode} onNav={onNav} />}
       {screen === 'scrape-run'     && <ScrapeRun      config={navParams.scrapeConfig}   onNav={onNav} />}
       {screen === 'classify-setup' && <ClassifySetup  onNav={onNav} />}
       {screen === 'classify-run'   && <ClassifyRun    config={navParams.classifyConfig} onNav={onNav} />}
@@ -57,6 +59,7 @@ export default function App() {
       {screen === 'workflow-list'  && <WorkflowList   onNav={onNav} />}
       {screen === 'jobs'           && <JobsList       onNav={onNav} />}
       {screen === 'data-preview'   && <DataPreview    initialFile={navParams.previewFile} onNav={onNav} />}
+      {screen === 'pipeline-run'   && <PipelineRun    config={navParams.scrapeConfig}    onNav={onNav} />}
     </Box>
   );
 }

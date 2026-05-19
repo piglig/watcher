@@ -5,11 +5,11 @@
  */
 
 import { resolve }           from 'path';
-import { createInterface }   from 'readline';
+import { waitForLoginSignal } from '../../shared/login-signal.js';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { launchPersistentContext } from 'cloakbrowser';
 
-export const DEFAULT_SESSION_DIR = resolve('.session-tiktok');
+export const DEFAULT_SESSION_DIR = resolve('sessions/tiktok');
 
 const NAV_DELAY          = 3000;
 const SCROLL_ROUNDS      = 8;    // wheel events per scroll burst
@@ -88,13 +88,7 @@ async function waitForLogin(page) {
       }
       return false;
     })(),
-    new Promise(res => {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      rl.question('', async () => {
-        rl.close();
-        res(await isLoggedInTikTok(page));
-      });
-    }),
+    waitForLoginSignal().then(() => isLoggedInTikTok(page)),
   ]);
 }
 

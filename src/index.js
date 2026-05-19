@@ -61,6 +61,12 @@ export {
   toInstagramJSON, toInstagramCSV,
 } from './platforms/instagram/index.js';
 
+// ── Bluesky ───────────────────────────────────────────────────────────────────
+export {
+  scrapeBluesky, scrapeBlueskyUser, parseBlueskyHandle,
+  toBlueskyJSON, toBlueskyCSV,
+} from './platforms/bluesky/index.js';
+
 // ── YouTube ───────────────────────────────────────────────────────────────────
 export {
   scrapeYouTube, scrapeYouTubeChannel, parseYouTubeChannel,

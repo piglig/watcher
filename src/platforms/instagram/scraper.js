@@ -11,7 +11,7 @@
 
 import { resolve }                          from 'path';
 import { writeFileSync }                    from 'fs';
-import { createInterface }                  from 'readline';
+import { waitForLoginSignal }               from '../../shared/login-signal.js';
 import {
   createBrowser,
   clearSession, sessionExists,
@@ -38,7 +38,7 @@ async function setupDesktopPage(context) {
   return page;
 }
 
-export const DEFAULT_SESSION_DIR = resolve('.session-instagram');
+export const DEFAULT_SESSION_DIR = resolve('sessions/instagram');
 
 // ── Username parsing ──────────────────────────────────────────────────────────
 
@@ -81,21 +81,8 @@ async function waitForInstagramLogin(page) {
       if (await isLoggedInInstagram(page)) finish(true);
     }, 1500);
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('', async () => {
-      rl.close();
-      if (done) return;
-      const ok = await isLoggedInInstagram(page);
-      if (!ok) {
-        console.log('\n  Not logged in yet — still waiting (press Enter again after login)...');
-        const rl2 = createInterface({ input: process.stdin, output: process.stdout });
-        rl2.question('', async () => {
-          rl2.close();
-          finish(await isLoggedInInstagram(page));
-        });
-        return;
-      }
-      finish(true);
+    waitForLoginSignal().then(async () => {
+      if (!done && await isLoggedInInstagram(page)) finish(true);
     });
 
     const timer = setTimeout(() => finish(false), 180_000);

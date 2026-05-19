@@ -89,6 +89,17 @@ function buildSteps(platforms) {
     });
   }
 
+  if (platforms.includes('bluesky') && (!process.env.BLUESKY_IDENTIFIER || !process.env.BLUESKY_APP_PASSWORD)) {
+    steps.push({
+      key: 'blueskyIdentifier', short: 'BS 账号', label: 'Bluesky 账号', type: 'text',
+      hint: '你自己的 handle，如 me.bsky.social',
+    });
+    steps.push({
+      key: 'blueskyAppPassword', short: 'BS 密码', label: 'Bluesky App Password', type: 'text',
+      hint: 'bsky.app → 设置 → App Passwords 中创建（非登录密码）',
+    });
+  }
+
   if (platforms.includes('reddit')) {
     steps.push({
       key: 'redditSource', short: '数据源', label: 'Reddit 数据源', type: 'select',
@@ -129,7 +140,7 @@ const SOURCE_ITEMS = [
   { label: '从 OSINT 结果导入',     value: 'osint'  },
 ];
 
-export default function ScrapeSetup({ onNav, prefill }) {
+export default function ScrapeSetup({ onNav, prefill, pipelineMode }) {
   // Phase: 'source' → choose manual vs OSINT-import (only when no prefill)
   //        'osint-pick' → pick which OSINT result dir to import
   //        'flow'   → normal step-by-step flow
@@ -207,6 +218,8 @@ export default function ScrapeSetup({ onNav, prefill }) {
         apiKey:             next.youtubeKey   || process.env.YOUTUBE_API_KEY,
         twitchClientId:     next.twitchClientId     || process.env.TWITCH_CLIENT_ID,
         twitchClientSecret: next.twitchClientSecret || process.env.TWITCH_CLIENT_SECRET,
+        blueskyIdentifier:  next.blueskyIdentifier  || process.env.BLUESKY_IDENTIFIER,
+        blueskyAppPassword: next.blueskyAppPassword || process.env.BLUESKY_APP_PASSWORD,
       };
 
       const platformConfigs = selectedPlatforms.map(pv => ({
@@ -215,7 +228,7 @@ export default function ScrapeSetup({ onNav, prefill }) {
         ...shared,
       }));
 
-      onNav('scrape-run', { scrapeConfig: platformConfigs });
+      onNav(pipelineMode ? 'pipeline-run' : 'scrape-run', { scrapeConfig: platformConfigs });
     } else {
       setStepIdx(i => i + 1);
       setDraft('');

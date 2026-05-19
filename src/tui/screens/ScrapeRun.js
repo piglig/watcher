@@ -4,6 +4,7 @@ import KeyBar from '../components/KeyBar.js';
 import { SYM } from '../theme.js';
 import { runScrape } from '../runner.js';
 import { getConfig } from '../../shared/config-store.js';
+import { confirmLogin, isLoginPending } from '../../shared/login-signal.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -48,10 +49,11 @@ function useElapsed(active) {
 const RECENT_LINES = 5;
 
 export default function ScrapeRun({ config, onNav }) {
-  const [recentLogs, setRecentLogs] = useState([]);
-  const [status, setStatus]         = useState('running');
-  const [result, setResult]         = useState(null);
-  const [errorMsg, setError]        = useState('');
+  const [recentLogs, setRecentLogs]   = useState([]);
+  const [status, setStatus]           = useState('running');
+  const [result, setResult]           = useState(null);
+  const [errorMsg, setError]          = useState('');
+  const [loginPending, setLoginPending] = useState(false);
 
   const rawRef    = useRef([]);
   const committed = useRef(0);
@@ -59,6 +61,9 @@ export default function ScrapeRun({ config, onNav }) {
 
   useInput((input, key) => {
     if (key.escape && status !== 'running') { onNav('menu'); return; }
+
+    // 浏览器登录等待中 → Enter 确认
+    if (key.return && loginPending) { confirmLogin(); return; }
 
     // 采集完成后按 Enter → 直接进入 AI 分类
     if (key.return && status === 'done' && result) {
@@ -106,6 +111,7 @@ export default function ScrapeRun({ config, onNav }) {
       if (all.length <= committed.current) return;
       committed.current = all.length;
       setRecentLogs(all.slice(-RECENT_LINES));
+      setLoginPending(isLoginPending());
     };
 
     const timer = setInterval(flush, 500);
@@ -150,6 +156,9 @@ export default function ScrapeRun({ config, onNav }) {
           )}
         </Box>
 
+        {status === 'running' && loginPending && (
+          <Text bold color="yellow">  浏览器已打开，请完成登录后按 Enter 确认</Text>
+        )}
         {status === 'running' && (
           recentLogs.length === 0
             ? <Text color="gray" dimColor>  正在启动...</Text>
@@ -184,15 +193,14 @@ export default function ScrapeRun({ config, onNav }) {
         </Box>
       )}
 
-      {status !== 'running' && (
-        <KeyBar hints={[
-          ...(status === 'done' ? [
-            { key: 'Enter', label: '继续 AI 分类' },
-            { key: 'P',     label: '预览数据' },
-          ] : []),
-          { key: 'ESC', label: '返回主菜单' },
-        ]} />
-      )}
+      <KeyBar hints={[
+        ...(loginPending ? [{ key: 'Enter', label: '确认登录' }] : []),
+        ...(status === 'done' ? [
+          { key: 'Enter', label: '继续 AI 分类' },
+          { key: 'P',     label: '预览数据' },
+        ] : []),
+        ...(status !== 'running' ? [{ key: 'ESC', label: '返回主菜单' }] : []),
+      ]} />
     </Box>
   );
 }

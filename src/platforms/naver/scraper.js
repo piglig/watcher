@@ -6,11 +6,11 @@
  */
 
 import { resolve }           from 'path';
-import { createInterface }   from 'readline';
+import { waitForLoginSignal } from '../../shared/login-signal.js';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { launchPersistentContext } from 'cloakbrowser';
 
-export const DEFAULT_SESSION_DIR = resolve('.session-naver');
+export const DEFAULT_SESSION_DIR = resolve('sessions/naver');
 
 const PAGE_SIZE    = 50;
 const NAV_DELAY    = 3000;
@@ -86,16 +86,12 @@ async function waitForLogin(page) {
       }
       return false;
     })(),
-    new Promise(res => {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      rl.question('', async () => {
-        rl.close();
-        try {
-          await page.goto('https://www.naver.com', { waitUntil: 'domcontentloaded', timeout: 15_000 });
-          await delay(1500);
-        } catch {}
-        res(await isLoggedIn(page));
-      });
+    waitForLoginSignal().then(async () => {
+      try {
+        await page.goto('https://www.naver.com', { waitUntil: 'domcontentloaded', timeout: 15_000 });
+        await delay(1500);
+      } catch {}
+      return isLoggedIn(page);
     }),
   ]);
 }
