@@ -2,7 +2,9 @@
  * instagram-output.js — Terminal table, stats, JSON and CSV for Instagram posts
  */
 
+import Papa from 'papaparse';
 import { formatNumber } from '../../shared/format.js';
+import { normalizeToPosts } from '../../shared/post.js';
 
 // ── Terminal table ────────────────────────────────────────────────────────────
 
@@ -81,7 +83,7 @@ export function printInstagramStats(profile, posts) {
 // ── Serialization ─────────────────────────────────────────────────────────────
 
 export function toInstagramJSON(profile, posts) {
-  return JSON.stringify({ profile, posts }, null, 2);
+  return JSON.stringify({ profile, posts: normalizeToPosts(posts) }, null, 2);
 }
 
 const CSV_HEADERS = [
@@ -92,14 +94,7 @@ const CSV_HEADERS = [
 ];
 
 export function toInstagramCSV(posts) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
-  };
-
-  const rows = posts.map(p => [
+  const data = posts.map(p => [
     p.id,
     p.url,
     p.type ?? '',
@@ -115,7 +110,6 @@ export function toInstagramCSV(posts) {
     p.metrics?.views    ?? 0,
     p.media?.length     ?? 0,
     (p.media ?? []).map(m => m.url).join(' | '),
-  ].map(esc).join(','));
-
-  return [CSV_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: CSV_HEADERS, data }, { newline: '\n' });
 }

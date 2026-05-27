@@ -24,6 +24,7 @@ const PLATFORM_ALIASES = {
   instagram: ['instagram'],
   twitch:    ['twitch'],
   bluesky:   ['bluesky', 'bsky', 'bluesky (bsky)'],
+  facebook:  ['facebook', 'fb', 'meta'],
 };
 
 function resolvePlatform(rawPlatform) {
@@ -101,6 +102,17 @@ function normalizeHandle(scrapeId, account) {
       const h = stripAt(handle_id) || pickFromUrl(url, /bsky\.app\/profile\/([\w.\-@]+)/i);
       return h ? h.replace(/^@/, '') : null;
     }
+    case 'facebook': {
+      // Accept handle, profile.php?id=..., /people/.../<id>, or bare numeric id.
+      const fromUrl = pickFromUrl(url,
+        /facebook\.com\/profile\.php\?id=(\d+)/i,
+        /facebook\.com\/people\/[^/]+\/(\d+)/i,
+        /facebook\.com\/([A-Za-z0-9_.\-]+)/i,
+      );
+      const h = stripAt(handle_id) || fromUrl;
+      if (!h) return null;
+      return /^\d+$/.test(h) ? `profile.php?id=${h}` : h;
+    }
     default:
       return null;
   }
@@ -114,22 +126,14 @@ function safeReadJSON(path) {
 }
 
 /**
- * Load every per-KOL OSINT result JSON from a directory.
- * Skips _summary.json and _targets.json. Returns [{ slug, data }].
+ * Load OSINT result from <wfDir>/accounts/identity.json. Returns [{ slug, data }].
  */
 export function loadOsintDir(dir) {
-  const out = [];
-  if (!existsSync(dir)) return out;
-  for (const name of readdirSync(dir)) {
-    if (!name.endsWith('.json')) continue;
-    if (name.startsWith('_')) continue;          // _summary, _targets
-    const full = join(dir, name);
-    const data = safeReadJSON(full);
-    if (data && (data.verified_accounts || data.suspected_accounts)) {
-      out.push({ slug: name.replace(/\.json$/, ''), data });
-    }
-  }
-  return out;
+  if (!existsSync(dir)) return [];
+  const data = safeReadJSON(join(dir, 'identity.json'));
+  if (!data) return [];
+  const slug = dir.split(/[\\/]/).filter(Boolean).slice(-2, -1)[0] ?? 'unnamed';
+  return [{ slug, data }];
 }
 
 /**
@@ -183,29 +187,22 @@ export function extractScrapeTargets(kols) {
 }
 
 /**
- * List OSINT result directories under a parent (looks for _summary.json sentinel).
- * Returns newest-first.
+ * List discoverable OSINT result directories under outDir.
+ * New layout: each subject (KOL) has its own <outDir>/<slug>/accounts/identity.json.
  */
-export function listOsintResultDirs(parent) {
+export function listOsintResultDirs(outDir) {
   const out = [];
-  if (!existsSync(parent)) return out;
+  if (!outDir || !existsSync(outDir)) return out;
+
   let entries;
-  try { entries = readdirSync(parent, { withFileTypes: true }); } catch { return out; }
+  try { entries = readdirSync(outDir, { withFileTypes: true }); } catch { return out; }
   for (const e of entries) {
     if (!e.isDirectory()) continue;
-    const full = join(parent, e.name);
-    const summary = join(full, '_summary.json');
-    if (existsSync(summary)) {
-      let mtime = 0;
-      try { mtime = statSync(summary).mtimeMs; } catch {}
-      out.push({ name: e.name, path: full, mtime });
-    }
-  }
-  // Also accept the parent itself if it directly contains _summary.json.
-  if (existsSync(join(parent, '_summary.json'))) {
+    const identity = join(outDir, e.name, 'accounts', 'identity.json');
+    if (!existsSync(identity)) continue;
     let mtime = 0;
-    try { mtime = statSync(join(parent, '_summary.json')).mtimeMs; } catch {}
-    out.unshift({ name: '(当前目录)', path: parent, mtime });
+    try { mtime = statSync(identity).mtimeMs; } catch {}
+    out.push({ name: e.name, path: join(outDir, e.name, 'accounts'), mtime });
   }
   return out.sort((a, b) => b.mtime - a.mtime);
 }

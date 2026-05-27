@@ -44,21 +44,60 @@ function makeClient(apiKey) {
   return google.youtube({ version: 'v3', auth: apiKey });
 }
 
-async function fetchChannel(yt, target) {
-  const params = { part: ['snippet', 'statistics', 'contentDetails'] };
-  if (target.channelId) {
-    params.id = [target.channelId];
-  } else {
-    params.forHandle = `@${target.handle.replace(/^@/, '')}`;
-  }
+async function resolveChannelByHandle(yt, handle) {
+  // Strategy 1: forHandle (supported since YouTube introduced @handles in 2023)
+  const r1 = await yt.channels.list({
+    part:      ['snippet', 'statistics', 'contentDetails'],
+    forHandle: `@${handle.replace(/^@/, '')}`,
+  });
+  if (r1.data.items?.[0]) return r1.data.items[0];
 
-  const res = await yt.channels.list(params);
-  const ch  = res.data.items?.[0];
+  // Strategy 2: search.list — works for legacy custom URLs (/c/<name>, /user/<name>)
+  // that don't yet map to a handle, costs 100 quota units vs 1 for channels.list.
+  console.log(`  forHandle returned nothing; falling back to search for "${handle}"...`);
+  const r2 = await yt.search.list({
+    part:       ['snippet'],
+    q:          handle.replace(/^@/, ''),
+    type:       ['channel'],
+    maxResults: 5,
+  });
+  const target = handle.replace(/^@/, '').toLowerCase();
+  const exact  = (r2.data.items ?? []).find(it => {
+    const t = (it.snippet?.channelTitle ?? '').toLowerCase();
+    const d = (it.snippet?.title ?? '').toLowerCase();
+    return t === target || d === target;
+  }) ?? r2.data.items?.[0];
+  if (!exact?.id?.channelId) return null;
+
+  const r3 = await yt.channels.list({
+    part: ['snippet', 'statistics', 'contentDetails'],
+    id:   [exact.id.channelId],
+  });
+  return r3.data.items?.[0] ?? null;
+}
+
+async function fetchChannel(yt, target) {
+  let ch = null;
+  if (target.channelId) {
+    const res = await yt.channels.list({
+      part: ['snippet', 'statistics', 'contentDetails'],
+      id:   [target.channelId],
+    });
+    ch = res.data.items?.[0] ?? null;
+  } else {
+    ch = await resolveChannelByHandle(yt, target.handle);
+  }
   if (!ch) throw new Error(`Channel not found: ${JSON.stringify(target)}`);
 
   const sn = ch.snippet    ?? {};
   const st = ch.statistics ?? {};
   const cd = ch.contentDetails?.relatedPlaylists ?? {};
+
+  // YouTube convention: a channel's uploads playlist ID is its channelId with
+  // the leading "UC" replaced by "UU". The API occasionally omits the field
+  // (e.g. for channels with hidden video counts) — derive it ourselves so we
+  // don't bail out prematurely.
+  const uploads = cd.uploads ?? (ch.id?.startsWith('UC') ? 'UU' + ch.id.slice(2) : '');
 
   return {
     id:               ch.id,
@@ -70,7 +109,7 @@ async function fetchChannel(yt, target) {
     subscribers:      Number(st.subscriberCount ?? 0),
     video_count:      Number(st.videoCount      ?? 0),
     view_count:       Number(st.viewCount        ?? 0),
-    uploads_playlist: cd.uploads ?? '',
+    uploads_playlist: uploads,
     platform:         'youtube',
   };
 }
@@ -80,12 +119,24 @@ async function fetchVideoIds(yt, uploadsPlaylistId, max) {
   let pageToken;
 
   while (ids.length < max) {
-    const res = await yt.playlistItems.list({
-      part:       ['contentDetails'],
-      playlistId: uploadsPlaylistId,
-      maxResults: Math.min(50, max - ids.length),
-      pageToken,
-    });
+    let res;
+    try {
+      res = await yt.playlistItems.list({
+        part:       ['contentDetails'],
+        playlistId: uploadsPlaylistId,
+        maxResults: Math.min(50, max - ids.length),
+        pageToken,
+      });
+    } catch (e) {
+      // playlistNotFound: the channel hides its uploads playlist (e.g. some
+      // YouTube Music topic channels, Shorts-only creators in certain regions).
+      const reason = e?.errors?.[0]?.reason ?? e?.code;
+      if (reason === 'playlistNotFound' || e?.response?.status === 404) {
+        console.warn(`[WARN] Uploads playlist ${uploadsPlaylistId} not accessible (${reason ?? '404'}).`);
+        return ids;
+      }
+      throw e;
+    }
     for (const item of (res.data.items ?? [])) {
       const vid = item.contentDetails?.videoId;
       if (vid) ids.push(vid);
@@ -94,6 +145,32 @@ async function fetchVideoIds(yt, uploadsPlaylistId, max) {
     if (!pageToken) break;
   }
 
+  return ids;
+}
+
+// search.list fallback — used when the uploads playlist is empty or hidden.
+// 100 quota units per call (vs 1 for playlistItems), so only invoked when
+// the cheaper path produced nothing.
+async function fetchVideoIdsBySearch(yt, channelId, max) {
+  const ids = [];
+  let pageToken;
+
+  while (ids.length < max) {
+    const res = await yt.search.list({
+      part:       ['id'],
+      channelId,
+      type:       ['video'],
+      order:      'date',
+      maxResults: Math.min(50, max - ids.length),
+      pageToken,
+    });
+    for (const item of (res.data.items ?? [])) {
+      const vid = item.id?.videoId;
+      if (vid) ids.push(vid);
+    }
+    pageToken = res.data.nextPageToken;
+    if (!pageToken) break;
+  }
   return ids;
 }
 
@@ -231,19 +308,29 @@ export async function scrapeYouTubeChannel(target, apiKey, opts = {}) {
 
   // 1. Channel
   const profile = await fetchChannel(yt, target);
-  dbg(`channel: ${profile.title} — ${profile.subscribers} subscribers`);
+  console.log(`  Channel: ${profile.title} (${profile.id}) — ${profile.subscribers} subscribers, ${profile.video_count} videos reported`);
 
-  if (!profile.uploads_playlist) throw new Error('No uploads playlist found.');
+  if (!profile.uploads_playlist) {
+    console.warn(`[WARN] No uploads playlist for ${profile.title} — channel has hidden video list. Trying search fallback...`);
+  }
 
   // 2. Video IDs
-  console.log('Fetching video list...');
-  const videoIds = await fetchVideoIds(yt, profile.uploads_playlist, max);
-  console.log(`${videoIds.length} videos found`);
+  console.log('  Fetching video list...');
+  let videoIds = profile.uploads_playlist
+    ? await fetchVideoIds(yt, profile.uploads_playlist, max)
+    : [];
+  if (!videoIds.length && profile.video_count > 0) {
+    console.log(`  Uploads playlist empty (channel reports ${profile.video_count} videos) — using search.list fallback`);
+    videoIds = await fetchVideoIdsBySearch(yt, profile.id, max);
+  }
+  console.log(`  ${videoIds.length} videos found`);
+
+  if (!videoIds.length) return { profile, videos: [] };
 
   // 3. Video details
-  console.log('Fetching video details...');
+  console.log('  Fetching video details...');
   let videos = await fetchVideoDetails(yt, videoIds);
-  console.log('Video details done');
+  console.log(`  ${videos.length} videos parsed`);
 
   // 4. Filter + sort
   videos = videos

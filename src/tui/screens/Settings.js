@@ -6,22 +6,25 @@ import DirPicker from '../components/DirPicker.js';
 import KeyBar from '../components/KeyBar.js';
 import { SYM } from '../theme.js';
 import { getConfig, setConfig } from '../../shared/config-store.js';
+import { CLASSIFY_MODEL_ITEMS, DEFAULT_GEMINI_MODEL } from '../../classifier/classifier.js';
+import { inferProvider } from '../../shared/ai-provider.js';
 
-const MODEL_ITEMS = [
-  { label: 'gpt-4.1-mini  快速省钱（推荐）', value: 'gpt-4.1-mini' },
-  { label: 'gpt-4.1       高精度',           value: 'gpt-4.1'      },
-  { label: 'gpt-4o-mini   备用',             value: 'gpt-4o-mini'  },
-];
+const MODEL_ITEMS = CLASSIFY_MODEL_ITEMS.map(item => ({
+  label: item.label,
+  value: `${item.provider}:${item.model}`,
+}));
 
 const SECTIONS = [
   {
     key:   'ai',
     label: 'AI 服务',
-    desc:  'OpenAI · xAI · 模型',
+    desc:  'Gemini · OpenAI · DeepSeek · xAI',
     fields: [
-      { key: 'openaiKey', label: 'OpenAI API Key', hint: '以 sk- 开头',                mask: true,  type: 'text'   },
-      { key: 'xaiKey',    label: 'xAI API Key',    hint: '以 xai- 开头；OSINT 功能需要', mask: true,  type: 'text'   },
-      { key: 'model',     label: '默认 AI 模型',   hint: '',                           mask: false, type: 'select', items: MODEL_ITEMS },
+      { key: 'geminiKey', label: 'Gemini API Key', hint: 'Google AI Studio API key；Gemini 分类需要', mask: true,  type: 'text'   },
+      { key: 'openaiKey', label: 'OpenAI API Key', hint: '以 sk- 开头；OpenAI 分类需要',                mask: true,  type: 'text'   },
+      { key: 'deepseekKey', label: 'DeepSeek API Key', hint: '以 sk- 开头；DeepSeek 文本分类需要',       mask: true,  type: 'text'   },
+      { key: 'xaiKey',    label: 'xAI API Key',    hint: '以 xai- 开头；OSINT 功能需要',                mask: true,  type: 'text'   },
+      { key: 'model',     label: '默认分析模型',   hint: '',                                             mask: false, type: 'select', items: MODEL_ITEMS },
     ],
   },
   {
@@ -44,6 +47,14 @@ const SECTIONS = [
       { key: 'outDir', label: '默认输出目录', hint: '采集结果保存位置', mask: false, type: 'dir' },
     ],
   },
+  {
+    key:   'workflow',
+    label: '调查 KOL',
+    desc:  '采集行为',
+    fields: [
+      { key: 'scrapeMax', label: '每账号采集上限', hint: '留空 = 全量（受平台 API 自然上限约束）', mask: false, type: 'text' },
+    ],
+  },
 ];
 
 function maskValue(val) {
@@ -55,7 +66,7 @@ function displayVal(field, val) {
   if (!val) return '';
   if (field.mask) return maskValue(val);
   if (field.type === 'select') {
-    const item = field.items?.find(i => i.value === val);
+    const item = field.items?.find(i => i.value === val || i.value.endsWith(`:${val}`));
     return item ? item.label.replace(/\s{2,}.*$/, '') : val;
   }
   return val;
@@ -100,17 +111,20 @@ export default function Settings({ onNav }) {
 
   const [values, setValues] = useState({
     openaiKey:          saved.openaiKey          ?? '',
+    geminiKey:          saved.geminiKey          ?? '',
+    deepseekKey:        saved.deepseekKey        ?? '',
     xaiKey:             saved.xaiKey             ?? '',
-    model:              saved.model              ?? '',
+    model:              saved.model ? `${inferProvider(saved.model, saved.aiProvider)}:${saved.model}` : `gemini:${DEFAULT_GEMINI_MODEL}`,
     youtubeKey:         saved.youtubeKey         ?? '',
     blueskyIdentifier:  saved.blueskyIdentifier  ?? '',
     blueskyAppPassword: saved.blueskyAppPassword ?? '',
     twitchClientId:     saved.twitchClientId     ?? '',
     twitchClientSecret: saved.twitchClientSecret ?? '',
     outDir:             saved.outDir             ?? '',
+    scrapeMax:          saved.scrapeMax          ?? '',
   });
 
-  // mode: 'section' | 'field' | 'editing'
+  // mode: 'section' | 'field' | 'editing' | 'selecting'
   const [mode,       setMode]       = useState('section');
   const [sectionIdx, setSectionIdx] = useState(0);
   const [fieldIdx,   setFieldIdx]   = useState(0);
@@ -123,10 +137,18 @@ export default function Settings({ onNav }) {
     const src = vals ?? values;
     const toSave = {};
     for (const [k, v] of Object.entries(src)) {
+      if (k === 'selectedModel') continue;
       if (v) toSave[k] = v;
+    }
+    if (toSave.model?.includes(':')) {
+      const [aiProvider, model] = toSave.model.split(':');
+      toSave.aiProvider = aiProvider;
+      toSave.model = model;
     }
     const cfg = setConfig(toSave);
     if (cfg.openaiKey)          process.env.OPENAI_API_KEY       = cfg.openaiKey;
+    if (cfg.geminiKey)          process.env.GEMINI_API_KEY       = cfg.geminiKey;
+    if (cfg.deepseekKey)        process.env.DEEPSEEK_API_KEY     = cfg.deepseekKey;
     if (cfg.xaiKey)             process.env.XAI_API_KEY          = cfg.xaiKey;
     if (cfg.youtubeKey)         process.env.YOUTUBE_API_KEY      = cfg.youtubeKey;
     if (cfg.blueskyIdentifier)  process.env.BLUESKY_IDENTIFIER   = cfg.blueskyIdentifier;
@@ -149,10 +171,18 @@ export default function Settings({ onNav }) {
       if (key.upArrow)                     setFieldIdx(i => Math.max(0, i - 1));
       if (key.downArrow)                   setFieldIdx(i => Math.min(section.fields.length - 1, i + 1));
       if (key.escape || key.leftArrow)     setMode('section');
+      if (key.return && field?.type === 'select') {
+        setMode('selecting');
+      }
       if (key.return && field?.type !== 'select') {
         setDraft(values[field?.key] ?? '');
         setMode('editing');
       }
+      return;
+    }
+
+    if (mode === 'selecting') {
+      if (key.escape || key.leftArrow) setMode('field');
       return;
     }
 
@@ -169,7 +199,12 @@ export default function Settings({ onNav }) {
   };
 
   const commitSelect = (value) => {
-    setValues(v => ({ ...v, [field.key]: value }));
+    if (field.key === 'model') {
+      const [aiProvider, model] = value.split(':');
+      setValues(v => ({ ...v, aiProvider, model: value, selectedModel: model }));
+    } else {
+      setValues(v => ({ ...v, [field.key]: value }));
+    }
     setMode('field');
   };
 
@@ -257,8 +292,8 @@ export default function Settings({ onNav }) {
                   </Box>
                 )}
 
-                {/* Select options (shown when cursor on select field in field mode) */}
-                {isCursor && f.type === 'select' && mode === 'field' && (
+                {/* Select options */}
+                {isCursor && f.type === 'select' && mode === 'selecting' && (
                   <Box marginLeft={2} flexDirection="column">
                     <SelectInput
                       items={f.items}
@@ -287,6 +322,8 @@ export default function Settings({ onNav }) {
           ? [{ key: '↑↓',    label: '切换分类' }, { key: 'Enter', label: '进入编辑' }, { key: 'ESC', label: '保存并返回' }]
         : mode === 'editing' && field?.type === 'dir'
           ? [{ key: '↑↓',   label: '导航' }, { key: '←', label: '上级目录' }, { key: 'Enter', label: '确认' }, { key: 'ESC', label: '取消' }]
+        : mode === 'selecting'
+          ? [{ key: '↑↓',   label: '选择模型' }, { key: 'Enter', label: '确认' }, { key: 'ESC', label: '取消' }]
         : mode === 'editing'
           ? [{ key: 'Enter', label: '保存' }, { key: 'ESC', label: '取消' }]
         : [{ key: '↑↓',      label: '切换字段' }, { key: 'Enter', label: '编辑' }, { key: '←/ESC', label: '返回分类' }]

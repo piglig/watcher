@@ -1,58 +1,85 @@
 import React, { useState, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import SelectInput from 'ink-select-input';
-import MultiSelect from '../components/MultiSelect.js';
+import TreeMultiSelect from '../components/TreeMultiSelect.js';
 import StepBar from '../components/StepBar.js';
 import KeyBar from '../components/KeyBar.js';
+import { Indicator, Item } from '../components/SelectChrome.js';
 import { SYM } from '../theme.js';
-import { readdirSync, existsSync } from 'fs';
-import { resolve, join, relative } from 'path';
+import { readdirSync, existsSync, statSync } from 'fs';
+import { resolve, join, basename } from 'path';
+import { walkFiles } from '../../shared/fs-walk.js';
 import { getConfig } from '../../shared/config-store.js';
+import { CLASSIFY_MODEL_ITEMS, DEFAULT_GEMINI_MODEL } from '../../classifier/classifier.js';
+import { inferProvider } from '../../shared/ai-provider.js';
 
-const MODEL_ITEMS = [
-  { label: 'gpt-4.1-mini  快速省钱（推荐）', value: 'gpt-4.1-mini' },
-  { label: 'gpt-4.1       高精度',           value: 'gpt-4.1'      },
-  { label: 'gpt-4o-mini   备用',             value: 'gpt-4o-mini'  },
-];
+const MODEL_ITEMS = CLASSIFY_MODEL_ITEMS.map(item => ({
+  label: item.label,
+  value: `${item.provider}:${item.model}`,
+}));
 
 const STEPS = [
   { key: 'inputFile', short: '文件', label: '选择文件', type: 'multi-files' },
   { key: 'model',     short: '模型', label: '模型',     type: 'select', items: MODEL_ITEMS },
 ];
 
-/** Recursively scan for JSON files, skipping the classified/ subdir */
-function scanJsonFilesRecursive(dir) {
-  const results = [];
-  try {
-    const abs = resolve(dir);
-    if (!existsSync(abs)) return [];
+/**
+ * Build a KOL → channel → file tree from <outDir>.
+ * Layout: <outDir>/<kol>/scrape/<platform>/<handle>/<timestamp>.json
+ */
+function listJsonFiles(dir) {
+  return walkFiles(dir, {
+    match: (n) => n.endsWith('.json') && !n.startsWith('_'),
+  }).map(f => f.path);
+}
 
-    function walk(d) {
-      let entries;
-      try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
-      for (const e of entries) {
-        if (e.isDirectory()) {
-          if (e.name !== 'classified') walk(join(d, e.name));
-        } else if (e.name.endsWith('.json')) {
-          const full = join(d, e.name);
-          results.push({ label: relative(abs, full), value: full });
-        }
+function buildKolTree(rootDir) {
+  const abs = resolve(rootDir);
+  if (!existsSync(abs)) return [];
+
+  const kolNodes = [];
+  for (const ent of readdirSync(abs, { withFileTypes: true })) {
+    if (!ent.isDirectory()) continue;
+    const scrapeRoot = join(abs, ent.name, 'scrape');
+    if (!existsSync(scrapeRoot)) continue;
+
+    const channelNodes = [];
+    for (const pEnt of readdirSync(scrapeRoot, { withFileTypes: true })) {
+      if (!pEnt.isDirectory()) continue;
+      const platformDir = join(scrapeRoot, pEnt.name);
+      for (const hEnt of readdirSync(platformDir, { withFileTypes: true })) {
+        if (!hEnt.isDirectory()) continue;
+        const files = listJsonFiles(join(platformDir, hEnt.name)).sort();
+        if (!files.length) continue;
+        channelNodes.push({
+          id:    `${ent.name}::${pEnt.name}::${hEnt.name}`,
+          label: `${pEnt.name} · @${hEnt.name}`,
+          files,
+          children: files.slice().reverse().map(f => ({
+            id:    f,
+            label: basename(f),
+            files: [f],
+          })),
+        });
       }
     }
-    walk(abs);
-  } catch {}
-  return results.sort((a, b) => b.label.localeCompare(a.label));
+
+    if (!channelNodes.length) continue;
+    channelNodes.sort((a, b) => a.label.localeCompare(b.label));
+    kolNodes.push({
+      id:       ent.name,
+      label:    ent.name,
+      files:    channelNodes.flatMap(c => c.files),
+      children: channelNodes,
+      mtime:    safeMtime(join(abs, ent.name)),
+    });
+  }
+
+  return kolNodes.sort((a, b) => b.mtime - a.mtime);
 }
 
-function Indicator({ isSelected }) {
-  return (
-    <Box marginRight={1}>
-      {isSelected ? <Text color="cyan" bold>{SYM.cursor}</Text> : <Text> </Text>}
-    </Box>
-  );
-}
-function Item({ label, isSelected }) {
-  return <Text color={isSelected ? 'white' : 'gray'}>{label}</Text>;
+function safeMtime(p) {
+  try { return statSync(p).mtimeMs; } catch { return 0; }
 }
 
 export default function ClassifySetup({ onNav }) {
@@ -66,7 +93,13 @@ export default function ClassifySetup({ onNav }) {
   const saved    = getConfig();
   const scanDir  = saved.outDir || './out/';
 
-  const fileItems = useMemo(() => scanJsonFilesRecursive(scanDir), [scanDir]);
+  const tree     = useMemo(() => buildKolTree(scanDir), [scanDir]);
+  const allFiles = useMemo(() => {
+    const out = [];
+    const walk = (ns) => { for (const n of ns) { if (n.children?.length) walk(n.children); else out.push(...n.files); } };
+    walk(tree);
+    return out;
+  }, [tree]);
 
   useInput((_, key) => {
     if (key.escape) {
@@ -82,7 +115,9 @@ export default function ClassifySetup({ onNav }) {
     setConfig(next);
 
     if (stepIdx + 1 >= STEPS.length) {
-      const model = next.model || saved.model || 'gpt-4.1-mini';
+      const selectedModel = next.model
+        || `${inferProvider(saved.model, saved.aiProvider)}:${saved.model || DEFAULT_GEMINI_MODEL}`;
+      const [aiProvider, model] = selectedModel.includes(':') ? selectedModel.split(':') : ['openai', selectedModel];
       const outDir = scanDir;
 
       let inputFiles;
@@ -90,9 +125,9 @@ export default function ClassifySetup({ onNav }) {
       if (Array.isArray(selected) && selected.length > 0) {
         inputFiles = selected;
       } else {
-        inputFiles = fileItems.map(f => f.value);
+        inputFiles = allFiles;
       }
-      onNav('classify-run', { classifyConfig: { inputFiles, model, outDir, wait: false } });
+      onNav('classify-run', { classifyConfig: { inputFiles, aiProvider, model, outDir, wait: false } });
     } else {
       setStepIdx(i => i + 1);
       setDraft('');
@@ -147,12 +182,12 @@ export default function ClassifySetup({ onNav }) {
         <Text color="gray" dimColor>目录：{scanDir}</Text>
 
         {step.type === 'multi-files' ? (
-          fileItems.length === 0 ? (
+          tree.length === 0 ? (
             <Text color="gray" dimColor>目录中暂无 .json 文件</Text>
           ) : (
             <>
-              <Text color="gray" dimColor>不选任何文件 = 全选目录中所有文件（共 {fileItems.length} 个）</Text>
-              <MultiSelect items={fileItems} onConfirm={(vals) => advance(vals)} />
+              <Text color="gray" dimColor>按 KOL 选择，展开可挑渠道 / 单个文件。共 {tree.length} 个 KOL · {allFiles.length} 个文件。</Text>
+              <TreeMultiSelect nodes={tree} onConfirm={(vals) => advance(vals)} />
             </>
           )
         ) : (
@@ -165,10 +200,19 @@ export default function ClassifySetup({ onNav }) {
         )}
       </Box>
 
-      <KeyBar hints={[
-        { key: 'Enter', label: '确认' },
-        { key: 'ESC',   label: stepIdx === 0 ? '返回菜单' : '上一步' },
-      ]} />
+      <KeyBar hints={
+        step.type === 'multi-files'
+          ? [
+              { key: 'Space', label: '选/反选' },
+              { key: '→',     label: '展开' },
+              { key: 'c',     label: '确认' },
+              { key: 'ESC',   label: stepIdx === 0 ? '返回菜单' : '上一步' },
+            ]
+          : [
+              { key: 'Enter', label: '确认' },
+              { key: 'ESC',   label: stepIdx === 0 ? '返回菜单' : '上一步' },
+            ]
+      } />
     </Box>
   );
 }

@@ -1,242 +1,281 @@
+/**
+ * JobsList — unified view of long-running jobs.
+ *
+ * Shows two kinds:
+ *   1. CLASSIFY SESSIONS (sessions.json) — chunked, may span N batches.
+ *      Pending: navigates to ClassifyRun for live view.
+ *   2. OSINT BATCHES (batch-store, kind='osint') — single-batch.
+ *      Pending: navigates to OsintRun for retrieval.
+ *
+ * Cancel/delete actions act on whichever the user highlights.
+ */
+
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import SelectInput from 'ink-select-input';
-import { BatchBadge } from '../components/StatusBadge.js';
 import KeyBar from '../components/KeyBar.js';
+import PagedListPicker from '../components/PagedListPicker.js';
 import { SYM } from '../theme.js';
-import { listBatches, updateBatch, deleteBatch } from '../../shared/batch-store.js';
+import { listBatches, updateBatch, deleteBatch, BATCH_STATUS } from '../../shared/batch-store.js';
+import {
+  listSessions, updateSession, deleteSession, SESSION_STATE,
+} from '../../shared/sessions-store.js';
+import { useSessions } from '../hooks/useSession.js';
 import { cancelBatch as cancelXaiBatch } from '../../osint/xai-client.js';
+import { fetchBatchResults } from '../../osint/index.js';
+import { regenerateReports, requestSessionCancel } from '../../classifier/session.js';
+import { getConfig } from '../../shared/config-store.js';
 import { OpenAI } from 'openai';
+import { GoogleGenAI } from '@google/genai';
+import { AI_PROVIDERS, apiKeyForProvider, envNameForProvider, inferProvider } from '../../classifier/classifier.js';
 
 function fmtAge(iso) {
+  if (!iso) return '—';
   const h = Math.round((Date.now() - new Date(iso)) / 3_600_000);
   if (h < 1)  return '刚刚';
   if (h < 24) return `${h} 小时前`;
   return `${Math.round(h / 24)} 天前`;
 }
 
-function Indicator({ isSelected }) {
-  return (
-    <Box marginRight={1}>
-      {isSelected ? <Text color="cyan" bold>{SYM.cursor}</Text> : <Text> </Text>}
-    </Box>
-  );
-}
-function Item({ label, isSelected }) {
-  return <Text color={isSelected ? 'white' : 'gray'}>{label}</Text>;
+const STATE_COLORS = {
+  submitting: 'cyan',
+  pending:    'yellow',
+  completed:  'green',
+  error:      'red',
+  cancelled:  'gray',
+};
+const STATE_LABEL = {
+  submitting: '提交中',
+  pending:    '等待中',
+  completed:  '已完成',
+  error:      '出错',
+  cancelled:  '已取消',
+};
+
+async function cancelClassifySession(session) {
+  const provider = inferProvider(session.model, session.provider);
+  if (provider === AI_PROVIDERS.DEEPSEEK) {
+    // DeepSeek has no remote batch — `submit` IS the work. requestSessionCancel
+    // sets state cancelled and aborts the in-process AbortController so the
+    // in-flight chat.completions calls stop and the worker loop bails out.
+    requestSessionCancel(session.id);
+    return;
+  }
+  const apiKey = apiKeyForProvider(provider);
+  const envName = envNameForProvider(provider);
+  if (!apiKey) throw new Error(`${envName} 未设置`);
+  const client = provider === 'gemini' ? new GoogleGenAI({ apiKey }) : new OpenAI({ apiKey });
+  for (const bid of session.batch_ids) {
+    try {
+      if (provider === 'gemini') await client.batches.cancel({ name: bid });
+      else await client.batches.cancel(bid);
+    } catch { /* may already be terminal */ }
+  }
+  updateSession(session.id, {
+    state: SESSION_STATE.CANCELLED,
+    error: '用户取消',
+  });
 }
 
-async function cancelRemoteBatch(batch) {
-  const kind = batch.kind ?? 'classify';
-  if (kind === 'osint') {
-    const apiKey = process.env.XAI_API_KEY;
-    if (!apiKey) throw new Error('XAI_API_KEY 未设置');
-    await cancelXaiBatch({ apiKey, batchId: batch.id });
-  } else {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error('OPENAI_API_KEY 未设置');
-    const client = new OpenAI({ apiKey });
-    await client.batches.cancel(batch.id);
-  }
+async function cancelOsintBatch(batch) {
+  const apiKey = process.env.XAI_API_KEY;
+  if (!apiKey) throw new Error('XAI_API_KEY 未设置');
+  await cancelXaiBatch({ apiKey, batchId: batch.id });
+  updateBatch(batch.id, { status: 'cancelled', cancelled_at: new Date().toISOString() });
 }
 
 export default function JobsList({ onNav }) {
-  const [version, setVersion] = useState(0);   // forces re-render after mutations
-  const batches = listBatches();
+  const sessions = useSessions();
+  const allBatches = listBatches();
+  const osintBatches = allBatches.filter(b => b.kind === 'osint');
 
-  const [highlightedId, setHighlightedId] = useState(null);
-  const [confirming,    setConfirming]    = useState(null);   // batch object pending confirm
-  const [busy,          setBusy]          = useState(false);
-  const [feedback,      setFeedback]      = useState('');     // status line
+  // Unified row model
+  const rows = [
+    ...sessions.map(s => ({
+      kind:    'session',
+      id:      s.id,
+      state:   s.state,
+      label:   `classify · ${s.id.slice(-12)}`,
+      meta:    `${s.completed}/${s.chunks_total || '?'} 批 · ${s.input_files.length} 文件`,
+      created: s.created_at,
+      raw:     s,
+    })),
+    ...osintBatches.map(b => ({
+      kind:    'osint',
+      id:      b.id,
+      state:   b.status,
+      label:   `osint · ${b.id.slice(-12)}`,
+      meta:    `${b.post_count ?? b.target_count ?? 0} 目标`,
+      created: b.created_at,
+      raw:     b,
+    })),
+  ].sort((a, b) => new Date(b.created) - new Date(a.created));
 
-  const pendingBatches = batches.filter(b => b.status === 'pending');
+  const [confirming, setConfirming] = useState(null);
+  const [busy,       setBusy]       = useState(false);
+  const [feedback,   setFeedback]   = useState('');
+  const [pickerMode, setPickerMode] = useState('nav');
 
+  // Confirmation-modal-only key handler (active while `confirming` is set).
   useInput(async (input, key) => {
-    if (busy) return;
-
-    // Confirmation prompt
-    if (confirming) {
-      if (input === 'y' || input === 'Y') {
-        setBusy(true);
-        const target = confirming;
-        try {
-          await cancelRemoteBatch(target);
-          updateBatch(target.id, { status: 'cancelled', cancelled_at: new Date().toISOString() });
-          setFeedback(`${SYM.check} 已取消 ${target.id.slice(-12)}`);
-        } catch (e) {
-          // If remote already cancelled / expired, still mark locally so it disappears from pending.
-          updateBatch(target.id, { status: 'cancelled', cancelled_at: new Date().toISOString() });
-          setFeedback(`${SYM.warn} 远程取消失败（${e.message ?? e}），已本地标记为取消`);
-        } finally {
-          setConfirming(null);
-          setBusy(false);
-          setVersion(v => v + 1);
-        }
-        return;
-      }
-      if (input === 'n' || input === 'N' || key.escape) {
+    if (!confirming || busy) return;
+    if (input === 'y' || input === 'Y') {
+      setBusy(true);
+      try {
+        if (confirming.kind === 'session') await cancelClassifySession(confirming.raw);
+        else                                await cancelOsintBatch(confirming.raw);
+        setFeedback(`${SYM.check} 已取消 ${confirming.id.slice(-12)}`);
+      } catch (e) {
+        setFeedback(`${SYM.warn} 取消失败：${e.message ?? e}`);
+      } finally {
         setConfirming(null);
-        return;
-      }
-      // Hard-delete the local record without contacting the API.
-      if (input === 'd' || input === 'D') {
-        deleteBatch(confirming.id);
-        setFeedback(`${SYM.check} 已删除本地记录 ${confirming.id.slice(-12)}`);
-        setConfirming(null);
-        setVersion(v => v + 1);
+        setBusy(false);
       }
       return;
     }
-
-    if (key.escape) { onNav('menu'); return; }
-
-    // 'c' on highlighted pending batch → start confirmation
-    if ((input === 'c' || input === 'C') && highlightedId) {
-      const target = pendingBatches.find(b => b.id === highlightedId);
-      if (target) setConfirming(target);
+    if (input === 'n' || input === 'N' || key.escape) { setConfirming(null); return; }
+    if (input === 'd' || input === 'D') {
+      if (confirming.kind === 'session') deleteSession(confirming.id);
+      else                                deleteBatch(confirming.id);
+      setFeedback(`${SYM.check} 已删除本地记录 ${confirming.id.slice(-12)}`);
+      setConfirming(null);
     }
-  });
+  }, { isActive: !!confirming });
 
-  if (!batches.length) {
-    return (
-      <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
-        <Text bold color="cyan">分类任务列表</Text>
-        <Box
-          borderStyle="round"
-          borderColor="gray"
-          borderDimColor
-          paddingX={2}
-          paddingY={1}
-        >
-          <Text color="gray" dimColor>暂无历史任务。先采集内容，再提交 AI 分类。</Text>
-        </Box>
-        <KeyBar hints={[{ key: 'ESC', label: '返回菜单' }]} />
-      </Box>
-    );
-  }
-
-  const handleSelect = ({ value }) => {
-    const batch = batches.find(b => b.id === value);
-    if (!batch || batch.status !== 'pending') return;
-    const kind = batch.kind ?? 'classify';
-
-    if (kind === 'osint') {
+  const handleSelect = (row) => {
+    if (!row) return;
+    if (row.kind === 'session') {
+      onNav('classify-run', { classifyConfig: { sessionId: row.id } });
+      return;
+    }
+    if (row.kind === 'osint' && (row.state === BATCH_STATUS.PENDING || row.state === BATCH_STATUS.COMPLETED)) {
+      const saved = getConfig();
       onNav('osint-run', {
         osintConfig: {
-          batchId: value,
-          model:   batch.model ?? 'grok-4.3',
-          outDir:  batch.out_dir ?? './out/osint/',
+          batchId: row.id,
+          model:   row.raw.model ?? 'grok-4.3',
+          // Prefer the user-facing root captured at submit time; fall back to current
+          // global outDir setting so legacy batches (without subject_out_dir) still
+          // promote to a sensible location instead of the internal staging path.
+          outDir:  row.raw.subject_out_dir ?? saved.outDir ?? './out/',
         },
       });
-      return;
     }
-
-    onNav('classify-run', {
-      classifyConfig: {
-        batchId:    value,
-        model:      batch.model ?? 'gpt-4.1-mini',
-        inputFiles: batch.input_files ?? [],
-        outDir:     batch.out ?? './out/',
-        wait:       false,
-      },
-    });
   };
+
+  const refreshOsintBatch = async (row) => {
+    if (busy) return;
+    const apiKey = process.env.XAI_API_KEY;
+    if (!apiKey) { setFeedback(`${SYM.warn} XAI_API_KEY 未设置`); return; }
+    if (!row.raw.out_dir) { setFeedback(`${SYM.warn} 该批次未记录 staging 目录`); return; }
+
+    setBusy(true);
+    setFeedback(`${SYM.run} 正在从 xAI 拉取 ${row.id.slice(-12)} ...`);
+    try {
+      const res = await fetchBatchResults(row.id, {
+        apiKey,
+        outDir: row.raw.out_dir,
+        wait:   false,
+      });
+      setFeedback(
+        res.status === BATCH_STATUS.COMPLETED
+          ? `${SYM.check} ${row.id.slice(-12)} 已完成，Enter 进入查看`
+          : `${SYM.dot} ${row.id.slice(-12)} 仍在 ${res.status}：${res.progress ?? ''}`
+      );
+    } catch (e) {
+      setFeedback(`${SYM.warn} 拉取失败：${e.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const regenerateClassifyReports = async (row) => {
+    if (busy) return;
+    setBusy(true);
+    setFeedback(`${SYM.run} 正在重建 ${row.id.slice(-12)} 的报告 ...`);
+    try {
+      const { result_files } = await regenerateReports(row.id);
+      const fileCount = result_files.reduce((s, k) => s + (k.files?.length ?? 0), 0);
+      setFeedback(`${SYM.check} ${row.id.slice(-12)} 重建完成，${result_files.length} 个 KOL · ${fileCount} 个文件，Enter 查看`);
+    } catch (e) {
+      setFeedback(`${SYM.warn} 重建失败：${e.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePickerKey = (input, _key, { item }) => {
+    if (!item) return;
+    if (input === 'c' || input === 'C') {
+      if (item.state === SESSION_STATE.PENDING || item.state === SESSION_STATE.SUBMITTING) setConfirming(item);
+    }
+    if (input === 'r' || input === 'R') {
+      if (item.kind === 'osint') refreshOsintBatch(item);
+    }
+    if (input === 'g' || input === 'G') {
+      if (item.kind === 'session' && item.state === SESSION_STATE.COMPLETED) regenerateClassifyReports(item);
+    }
+  };
+
+  const renderRow = (r, { selected }) => (
+    <Box>
+      <Text color={selected ? 'cyan' : 'gray'} bold={selected}>{selected ? SYM.cursor : ' '} </Text>
+      <Text color={STATE_COLORS[r.state] ?? 'gray'}>
+        {(STATE_LABEL[r.state] ?? r.state).padEnd(5)}
+      </Text>
+      <Text color={r.kind === 'session' ? 'cyan' : 'magenta'}>{'  '}{r.label.padEnd(26)}</Text>
+      <Text color="gray" dimColor>{r.meta.padEnd(20)}</Text>
+      <Text color="gray" dimColor>{'  '}{fmtAge(r.created)}</Text>
+    </Box>
+  );
+
+  // Reserve: title (1) + counter (1) + KeyBar (1) + outer paddingY*2 (2) + confirming/feedback slack (3)
+  const reserved = 8 + (confirming ? 3 : 0) + (feedback && !confirming ? 1 : 0);
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
-      <Text bold color="cyan">分类任务列表</Text>
-
-      {/* History table */}
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor="gray"
-        borderDimColor
-        paddingX={2}
-        paddingY={0}
-      >
-        <Box gap={3} marginBottom={0}>
-          <Text color="gray" dimColor>{'状态'.padEnd(6)}</Text>
-          <Text color="gray" dimColor>{'类型'.padEnd(8)}</Text>
-          <Text color="gray" dimColor>{'ID（后 12 位）'.padEnd(14)}</Text>
-          <Text color="gray" dimColor>{'数量'.padEnd(6)}</Text>
-          <Text color="gray" dimColor>时间</Text>
-        </Box>
-        <Box>
-          <Text color="gray" dimColor>{'─'.repeat(56)}</Text>
-        </Box>
-        {batches.map(b => {
-          const kind = b.kind ?? 'classify';
-          return (
-            <Box key={b.id} gap={3}>
-              <BatchBadge status={b.status} />
-              <Text color={kind === 'osint' ? 'magenta' : 'cyan'}>{kind.padEnd(8)}</Text>
-              <Text color="gray" dimColor>{b.id.slice(-12)}</Text>
-              <Text color="gray" dimColor>{String(b.post_count ?? b.target_count ?? 0).padStart(5)}</Text>
-              <Text color="gray" dimColor>{fmtAge(b.created_at)}</Text>
-            </Box>
-          );
-        })}
+      <Box>
+        <Text bold color="cyan">分类任务列表 </Text>
+        <Text color="gray" dimColor>
+          ({rows.length} 条 · {pickerMode === 'search' ? '搜索中' : 'Enter 查看 · / 搜索 · c 取消等待中任务'})
+        </Text>
       </Box>
 
-      {/* Pending selector */}
-      {pendingBatches.length > 0 ? (
-        <Box flexDirection="column" gap={0}>
-          <Text bold color="cyan">等待中的批次（Enter 检索 · c 取消）</Text>
-          <SelectInput
-            key={version}
-            items={pendingBatches.map(b => ({
-              label: `[${b.kind ?? 'classify'}] ${b.id.slice(-12)}  ${b.post_count ?? b.target_count ?? 0} 条  ${fmtAge(b.created_at)}`,
-              value: b.id,
-            }))}
-            onSelect={handleSelect}
-            onHighlight={(item) => setHighlightedId(item?.value ?? null)}
-            indicatorComponent={Indicator}
-            itemComponent={Item}
-          />
-        </Box>
-      ) : (
-        <Box
-          borderStyle="round"
-          borderColor="gray"
-          borderDimColor
-          paddingX={2}
-        >
-          <Text color="gray" dimColor>
-            {SYM.check} 没有等待中的批次。所有任务已完成或失败。
-          </Text>
-        </Box>
-      )}
+      <PagedListPicker
+        items={rows}
+        getKey={(r) => r.id}
+        getSearchText={(r) => `${r.label} ${r.meta} ${r.state} ${STATE_LABEL[r.state] ?? ''} ${r.id}`}
+        renderItem={renderRow}
+        onSelect={handleSelect}
+        onCancel={() => onNav('menu')}
+        onKey={handlePickerKey}
+        onModeChange={setPickerMode}
+        emptyText="暂无任务。先采集内容或新建 KOL 调查。"
+        reservedLines={reserved}
+        isActive={!confirming}
+      />
 
-      {/* Cancel confirmation */}
       {confirming && (
-        <Box
-          flexDirection="column"
-          borderStyle="round"
-          borderColor="yellow"
-          paddingX={2}
-        >
-          <Text bold color="yellow">
-            {SYM.warn} 确认取消批次 [{confirming.kind ?? 'classify'}] {confirming.id.slice(-12)}？
-          </Text>
-          <Text color="gray" dimColor>
-            y = 远程取消 + 标记本地为 cancelled；d = 仅删除本地记录；n / ESC = 放弃
-          </Text>
-          {busy && <Text color="gray" dimColor>正在调用 API...</Text>}
+        <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={2}>
+          <Text bold color="yellow">{SYM.warn} 取消 {confirming.label}？</Text>
+          <Text color="gray" dimColor>y = 远程 + 本地取消；d = 仅删本地记录；n / ESC = 放弃</Text>
         </Box>
       )}
-
-      {/* Feedback line */}
-      {feedback && !confirming && (
-        <Box paddingX={1}>
-          <Text color="gray">{feedback}</Text>
-        </Box>
-      )}
+      {feedback && !confirming && <Text color="gray">{feedback}</Text>}
 
       <KeyBar hints={
         confirming
-          ? [{ key: 'y', label: '取消批次' }, { key: 'd', label: '仅删除本地' }, { key: 'n/ESC', label: '放弃' }]
-          : [{ key: 'Enter', label: '检索' }, { key: 'c', label: '取消批次' }, { key: 'ESC', label: '返回' }]
+          ? [{ key: 'y', label: '取消' }, { key: 'd', label: '仅删本地' }, { key: 'n/ESC', label: '放弃' }]
+          : pickerMode === 'search'
+            ? [{ key: 'Enter', label: '选中' }, { key: 'ESC', label: '退出搜索' }]
+            : [
+                { key: 'Enter',     label: '查看' },
+                { key: '/',         label: '搜索' },
+                { key: 'PgUp/PgDn', label: '翻页' },
+                { key: 'r',         label: '主动下载 (OSINT)' },
+                { key: 'g',         label: '重建报告 (Classify)' },
+                { key: 'c',         label: '取消' },
+                { key: 'ESC',       label: '返回' },
+              ]
       } />
     </Box>
   );

@@ -2,7 +2,9 @@
  * naver-output.js — Stats, JSON and CSV output for Naver Café posts
  */
 
+import Papa from 'papaparse';
 import { formatNumber } from '../../shared/format.js';
+import { normalizeToPosts } from '../../shared/post.js';
 
 export function printNaverStats(posts, memberCount = null) {
   if (!posts.length) return;
@@ -35,7 +37,7 @@ export function printNaverStats(posts, memberCount = null) {
 }
 
 export function toNaverJSON(posts, memberCount = null) {
-  return JSON.stringify({ memberCount, posts }, null, 2);
+  return JSON.stringify({ profile: { memberCount }, posts: normalizeToPosts(posts) }, null, 2);
 }
 
 const CSV_HEADERS = [
@@ -47,13 +49,7 @@ const CSV_HEADERS = [
 ];
 
 export function toNaverCSV(posts) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-
-  const rows = posts.map(p => [
+  const data = posts.map(p => [
     p.id,
     p.url,
     p.title,
@@ -70,7 +66,6 @@ export function toNaverCSV(posts) {
     p.metrics.scraps,
     p.metrics.reposts,
     p.has_image,
-  ].map(esc).join(','));
-
-  return [CSV_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: CSV_HEADERS, data }, { newline: '\n' });
 }

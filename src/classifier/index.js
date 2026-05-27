@@ -1,14 +1,25 @@
 export {
   CATEGORIES,
+  AI_PROVIDERS,
+  CLASSIFY_MODEL_ITEMS,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_DEEPSEEK_MODEL,
+  DEFAULT_OPENAI_MODEL,
+  apiKeyForProvider,
+  defaultModelForProvider,
+  envNameForProvider,
+  inferProvider,
   extractText,
   buildBatchJSONL,
+  buildGeminiBatchJSONL,
   submitBatch,
   fetchBatchResults,
   aggregateUserRisk,
+  chunkPosts,
+  MAX_POSTS_PER_BATCH,
 } from './classifier.js';
 
 export {
-  normalizePost,
   normalizePosts,
   extractPosts,
   mergeAndNormalize,

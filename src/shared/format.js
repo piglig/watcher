@@ -8,8 +8,3 @@ export function formatNumber(n) {
   return String(n ?? 0);
 }
 
-export function escapeCSV(v) {
-  const s = String(v ?? '');
-  return s.includes(',') || s.includes('"') || s.includes('\n')
-    ? `"${s.replace(/"/g, '""')}"` : s;
-}

@@ -2,14 +2,14 @@
  * orchestrator.js — Drive a KOL investigation workflow through its stages.
  *
  * Stages (each `advance*` call performs work and may transition state):
- *   1. startWorkflow         → submits OSINT batch              → osint_pending
+ *   1. startWorkflows        → submits OSINT batch              → osint_pending
  *   2. tryAdvanceOsint       → fetches OSINT if ready           → osint_done
  *   3. runScrapeAndSubmitCls → scrape inline + submit classify  → classify_pending
  *   4. tryAdvanceClassify    → fetch classify + render report   → report_done
  */
 
-import { mkdirSync, existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { readFileSync, writeFileSync } from 'fs';
+import { resolve, join } from 'path';
 
 import {
   submitBatch       as submitOsintBatch,
@@ -17,27 +17,29 @@ import {
   getAllResults     as getAllOsintResults,
   loadOsintDir,
   extractScrapeTargets,
+  enrichFromBios,
+  enrichFromScrapedProfiles,
+  discoveriesToPlatformConfigs,
 } from '../osint/index.js';
 import { writeResults as writeOsintResults } from '../osint/output.js';
 
-import { runScrape }         from '../tui/runner.js';
-import { mergeAndNormalize } from '../shared/normalize.js';
-import {
-  submitBatch       as submitClassifyBatch,
-  fetchBatchResults as fetchClassifyResults,
-  aggregateUserRisk,
-} from '../classifier/classifier.js';
-import { applyRulesAll }   from '../classifier/rules.js';
-import { toClassifierJSON, toUserRiskCSV, toFlaggedPostsCSV } from '../classifier/output.js';
-
-import { readFileSync, writeFileSync } from 'fs';
+import { runScrape } from '../tui/runner.js';
+import { createSession, getSession } from '../shared/sessions-store.js';
+import { advanceSession } from '../classifier/session.js';
+import { defaultModelForProvider, envNameForProvider, inferProvider } from '../classifier/classifier.js';
 import { renderReport } from './report.js';
 import {
+  kolDir, accountsDir, identityFile, osintStagingDir, ensureDir, pathSafe,
+} from '../shared/paths.js';
+import {
   createWorkflow,
+  newWorkflowId,
   updateWorkflow,
   updateStage,
   getWorkflow,
+  WORKFLOW_STATE,
 } from './store.js';
+import { SESSION_STATE } from '../shared/sessions-store.js';
 
 // ── 1. Start ───────────────────────────────────────────────────────────────────
 
@@ -60,53 +62,42 @@ export async function startWorkflows(kols, { outBaseDir }) {
     if (!k.name || !k.seedUrl) throw new Error(`无效的 KOL 输入：${JSON.stringify(k)}`);
   }
 
-  // Shared OSINT staging dir (holds the _targets.json + _summary.json for the
-  // whole batch). Per-workflow result_dirs live under each wf's own out_dir.
-  const sharedRoot = resolve(join(outBaseDir, 'workflows', `batch_${Date.now()}`));
-  const sharedOsintDir = join(sharedRoot, 'osint-shared');
-  mkdirSync(sharedOsintDir, { recursive: true });
-
-  // 1) Submit the shared OSINT batch
+  // Submit the shared OSINT batch. Shared staging lives under ~/.sns-audit/internal/
+  // (it's system data — user doesn't browse it).
   const { batchId, targetsMap } = await submitOsintBatch(kols, {
-    apiKey: process.env.XAI_API_KEY,
-    outDir: sharedOsintDir,
+    apiKey:     process.env.XAI_API_KEY,
+    outDirFor:  (id) => osintStagingDir(id),
   });
 
-  // targetsMap is insertion-ordered identically to `kols` (both come from
-  // buildBatchRequests's single pass), so we zip by index. This is robust to
-  // duplicate KOL names (slugger appends -2 / -3 suffixes).
   const slugs = Object.keys(targetsMap);
   if (slugs.length !== kols.length) {
     throw new Error(`slug count ${slugs.length} ≠ KOL count ${kols.length}`);
   }
 
-  // 3) Create one workflow per KOL, all pointing at the same batch_id
+  // One workflow per KOL — wf.out_dir IS <outBaseDir>/<kol-slug>/, the
+  // user-facing per-person directory. Re-investigations of the same KOL
+  // stack into the same dir (analysis/<session_id> isolates them).
+  const outRoot = resolve(outBaseDir);
   const workflows = [];
   for (let i = 0; i < kols.length; i++) {
-    const k = kols[i];
-    const slug = slugs[i];
-    const wfOutDir = join(sharedRoot, slug);
-    mkdirSync(wfOutDir, { recursive: true });
-    const wfOsintDir = join(wfOutDir, 'osint');
-    mkdirSync(wfOsintDir, { recursive: true });
+    const k     = kols[i];
+    const kolId = slugs[i];          // OSINT slug = canonical kol_id
 
-    const wf = createWorkflow({ kolName: k.name, seedUrl: k.seedUrl, outDir: wfOutDir });
-    const fresh = updateStage(wf.id, 'osint', {
+    const wfid     = newWorkflowId();
+    const wfOutDir = kolDir(outRoot, kolId);
+    ensureDir(accountsDir(outRoot, kolId));
+
+    createWorkflow({ id: wfid, kolId, kolName: k.name, seedUrl: k.seedUrl, outDir: wfOutDir });
+    const fresh = updateStage(wfid, 'osint', {
       batch_id:   batchId,
-      result_dir: wfOsintDir,
-      slug,
+      staging:    osintStagingDir(batchId),
+      slug:       kolId,             // kept as `slug` for the existing batch-filter contract
       shared:     kols.length > 1,
     });
     workflows.push(fresh);
   }
 
   return workflows;
-}
-
-/** Back-compat single-KOL entry. */
-export async function startWorkflow({ kolName, seedUrl, outBaseDir }) {
-  const [wf] = await startWorkflows([{ name: kolName, seedUrl }], { outBaseDir });
-  return wf;
 }
 
 // ── 2. After OSINT ─────────────────────────────────────────────────────────────
@@ -121,7 +112,7 @@ export async function startWorkflow({ kolName, seedUrl, outBaseDir }) {
 export async function tryAdvanceOsint(workflowId) {
   const wf = getWorkflow(workflowId);
   if (!wf) throw new Error(`Workflow ${workflowId} not found`);
-  if (wf.state !== 'osint_pending') return { state: wf.state };
+  if (wf.state !== WORKFLOW_STATE.OSINT_PENDING) return { state: wf.state };
 
   const apiKey = process.env.XAI_API_KEY;
   if (!apiKey) throw new Error('XAI_API_KEY 未设置');
@@ -131,39 +122,68 @@ export async function tryAdvanceOsint(workflowId) {
   if (batch.state?.num_pending !== 0) {
     const s = batch.state ?? {};
     return {
-      state:    'osint_pending',
+      state:    WORKFLOW_STATE.OSINT_PENDING,
       progress: `${s.num_success ?? 0}/${s.num_requests ?? 0}`,
     };
   }
 
-  // Pull all results, then keep only the one matching this workflow's slug.
+  // Pull all results (cached to staging for recovery/debug), then write this
+  // workflow's slice as the user-facing accounts/identity.json.
   const all  = await getAllOsintResults({ apiKey, batchId: wf.osint.batch_id });
   const mine = all.filter(r => r.batch_request_id === wf.osint.slug);
 
   if (!mine.length) {
     updateWorkflow(workflowId, {
-      state: 'error',
+      state: WORKFLOW_STATE.ERROR,
       error: `共享 batch ${wf.osint.batch_id} 完成，但未找到 slug=${wf.osint.slug} 的结果`,
     });
     throw new Error(`Result missing for slug ${wf.osint.slug}`);
   }
 
-  // Write the per-KOL JSON into THIS workflow's osint dir
+  // Write/refresh staging (idempotent — writes every KOL's slice + _summary).
   const targetsMap = { [wf.osint.slug]: { name: wf.kol.name, seed_url: wf.kol.seed_url } };
-  const summary = writeOsintResults(mine, wf.osint.result_dir, targetsMap);
+  const stagingSummary = writeOsintResults(mine, wf.osint.staging, targetsMap);
 
-  updateStage(workflowId, 'osint', { completed_at: new Date().toISOString() });
-
-  if (summary.success === 0) {
+  if (stagingSummary.success === 0) {
     updateWorkflow(workflowId, {
-      state: 'error',
-      error: summary.items[0]?.error ?? 'OSINT 解析失败',
+      state: WORKFLOW_STATE.ERROR,
+      error: stagingSummary.items[0]?.error ?? 'OSINT 解析失败',
     });
-    return { state: 'error' };
+    return { state: WORKFLOW_STATE.ERROR };
   }
 
-  updateWorkflow(workflowId, { state: 'osint_done' });
-  return { state: 'osint_done', slug: wf.osint.slug };
+  // Promote this wf's slice to user-facing accounts/identity.json. Stamp the
+  // canonical kol_id (the OSINT slug — same string used everywhere else for
+  // this person) into the document itself so downstream code never has to
+  // re-derive identity from a directory name.
+  const stagingSlugFile = stagingSummary.items[0]?.file;
+  if (stagingSlugFile) {
+    const accDir = ensureDir(join(wf.out_dir, 'accounts'));
+    const identity = JSON.parse(readFileSync(stagingSlugFile, 'utf-8'));
+    identity.kol_id = wf.kol_id ?? wf.osint.slug;
+
+    // Bio-link enrichment: walk each verified profile's public bio for
+    // outbound links to other platforms Grok didn't surface, and merge them
+    // into suspected_accounts so the scrape stage picks them up too.
+    try {
+      const discovered = await enrichFromBios(identity);
+      if (discovered.length) {
+        identity.suspected_accounts = [
+          ...(identity.suspected_accounts ?? []),
+          ...discovered,
+        ];
+      }
+    } catch (e) {
+      // Bio enrichment is best-effort — never block OSINT completion on it.
+      console.warn(`[bio-enrich] ${wf.kol_id}: ${e.message ?? e}`);
+    }
+
+    writeFileSync(join(accDir, 'identity.json'), JSON.stringify(identity, null, 2), 'utf-8');
+  }
+
+  updateStage(workflowId, 'osint', { completed_at: new Date().toISOString() });
+  updateWorkflow(workflowId, { state: WORKFLOW_STATE.OSINT_DONE });
+  return { state: WORKFLOW_STATE.OSINT_DONE, slug: wf.osint.slug };
 }
 
 // ── 3. Scrape + submit classify ────────────────────────────────────────────────
@@ -181,13 +201,16 @@ export async function tryAdvanceOsint(workflowId) {
 export async function runScrapeAndSubmitClassify(workflowId, scrapeOpts, onLog = () => {}) {
   const wf = getWorkflow(workflowId);
   if (!wf) throw new Error(`Workflow ${workflowId} not found`);
-  if (wf.state !== 'osint_done') throw new Error(`Workflow not in osint_done state (got ${wf.state})`);
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY 未设置');
+  if (wf.state !== WORKFLOW_STATE.OSINT_DONE) throw new Error(`Workflow not in osint_done state (got ${wf.state})`);
+  const provider = inferProvider(scrapeOpts.classifyModel, scrapeOpts.classifyProvider);
+  const envName = envNameForProvider(provider);
+  if (!process.env[envName]) throw new Error(`${envName} 未设置`);
 
-  // ── 3a. Build scrape targets from OSINT result ──────────────────────────────
-  const kols    = loadOsintDir(wf.osint.result_dir);
-  const extract = extractScrapeTargets(kols);
-  const pvs     = Object.keys(extract.targets);
+  // ── 3a. Build scrape targets from user-facing identity.json ────────────────
+  const identityFile = join(wf.out_dir, 'accounts', 'identity.json');
+  const identity = JSON.parse(readFileSync(identityFile, 'utf-8'));
+  const extract  = extractScrapeTargets([{ slug: wf.osint.slug, data: identity }]);
+  const pvs      = Object.keys(extract.targets);
 
   updateStage(workflowId, 'scrape', {
     targets:       extract.targets,
@@ -197,88 +220,107 @@ export async function runScrapeAndSubmitClassify(workflowId, scrapeOpts, onLog =
 
   if (!pvs.length) {
     updateWorkflow(workflowId, {
-      state: 'error',
+      state: WORKFLOW_STATE.ERROR,
       error: `OSINT 未发现可采集账号（忽略 ${extract.ignoredCount} 个未支持平台）`,
     });
     throw new Error('No scrapable accounts discovered');
   }
 
-  // ── 3b. Run scraper (synchronous) ───────────────────────────────────────────
-  updateWorkflow(workflowId, { state: 'scraping' });
+  // ── 3b. Run scraper (synchronous) — outputs go under <kol_id>/scrape/ ─────
+  updateWorkflow(workflowId, { state: WORKFLOW_STATE.SCRAPING });
   onLog(`开始采集 ${pvs.length} 个平台 / ${Object.values(extract.targets).reduce((s,a)=>s+a.length,0)} 个账号`);
 
-  const scrapeDir = join(wf.out_dir, 'scrape');
-  mkdirSync(scrapeDir, { recursive: true });
+  // outDir = the per-user-output ROOT (the layer above <kol_id>/).
+  // wf.out_dir == <outRoot>/<kol_id>; runner.js uses kolId to construct
+  // the full <outRoot>/<kol_id>/scrape/<platform>/<handle>/<stamp>.json path.
+  const outRoot = resolve(join(wf.out_dir, '..'));
+  const kolId   = wf.kol_id;
+  if (!kolId) throw new Error(`Workflow ${workflowId} has no kol_id — corrupted state`);
 
   const platformConfigs = pvs.map(pv => ({
     platform:     pv,
     targets:      extract.targets[pv].join(','),
+    kolId,
     max:          scrapeOpts.max          || '200',
     since:        scrapeOpts.since        || '',
     until:        scrapeOpts.until        || '',
     headed:       !!scrapeOpts.headed,
     redditSource: scrapeOpts.redditSource || 'arctic',
     apiKey:       process.env.YOUTUBE_API_KEY,
-    outDir:       scrapeDir,
+    outDir:       outRoot,
   }));
 
-  const scrapeResult = await runScrape(platformConfigs);
+  const scrapeResult = await runScrape(platformConfigs, onLog);
   onLog(`采集完成：${scrapeResult.totalCount} 条内容（${scrapeResult.savedFiles.length} 个文件）`);
 
+  // Post-scrape bio enrichment + feedback scrape.
+  //
+  // IG / X / Facebook are auth-walled at OSINT time, but their bio text is
+  // now sitting on disk in this KOL's accounts/profiles/<platform>.json
+  // snapshots. Mine outbound URLs, append new candidates to identity.json,
+  // and *also* fan out a second runScrape pass for the new targets so the
+  // classify session sees the full set of posts — not just the OSINT-known
+  // accounts. Capped at one feedback round to avoid runaway exploration.
+  try {
+    const r = enrichFromScrapedProfiles(wf.out_dir, { onLog });
+    if (r.added > 0) {
+      onLog(`[bio-enrich:post-scrape] 从 ${r.scanned} 个平台 profile 中发现 ${r.added} 个新候选账号`);
+
+      const followUp = discoveriesToPlatformConfigs(r.discovered, kolId, {
+        max:          scrapeOpts.max          || '200',
+        since:        scrapeOpts.since        || '',
+        until:        scrapeOpts.until        || '',
+        headed:       !!scrapeOpts.headed,
+        redditSource: scrapeOpts.redditSource || 'arctic',
+        apiKey:       process.env.YOUTUBE_API_KEY,
+        outDir:       outRoot,
+      });
+      if (followUp.length) {
+        const platforms = followUp.map(c => c.platform).join(', ');
+        onLog(`[bio-enrich:feedback] 启动二轮采集 · ${followUp.length} 个平台（${platforms}）`);
+        const second = await runScrape(followUp, onLog);
+        scrapeResult.savedFiles.push(...second.savedFiles);
+        scrapeResult.totalCount += second.totalCount;
+        onLog(`[bio-enrich:feedback] 二轮采集完成 · +${second.totalCount} 条 / ${second.savedFiles.length} 文件`);
+      }
+    }
+  } catch (e) {
+    onLog(`[bio-enrich:post-scrape] 异常：${e.message ?? e}`);
+  }
+
   updateStage(workflowId, 'scrape', {
-    out_dir:      scrapeDir,
     saved_files:  scrapeResult.savedFiles,
     total_count:  scrapeResult.totalCount,
     completed_at: new Date().toISOString(),
   });
-  updateWorkflow(workflowId, { state: 'scrape_done' });
+  updateWorkflow(workflowId, { state: WORKFLOW_STATE.SCRAPE_DONE });
 
   if (!scrapeResult.totalCount) {
-    updateWorkflow(workflowId, { state: 'error', error: '采集到 0 条内容，跳过分类' });
+    updateWorkflow(workflowId, { state: WORKFLOW_STATE.ERROR, error: '采集到 0 条内容，跳过分类' });
     throw new Error('Scrape produced 0 posts');
   }
 
-  // ── 3c. Load scraped posts, run rule engine, submit classify batch ──────────
-  const dataArrays = scrapeResult.savedFiles
-    .map(f => { try { return JSON.parse(readFileSync(f.file, 'utf-8')); } catch { return null; } })
-    .filter(Boolean);
-  const allPosts = mergeAndNormalize(dataArrays);
-  onLog(`合并并规范化 ${allPosts.length} 条内容`);
-
-  const classifyDir = join(wf.out_dir, 'classify');
-  mkdirSync(classifyDir, { recursive: true });
-
-  const ruleHits    = applyRulesAll(allPosts);
-  const ruleResults = Object.fromEntries(
-    ruleHits.map(r => [String(r.id), { scores: r.scores, reasons: r.reasons ?? {}, source: 'rule' }])
-  );
-  const llmPosts = allPosts.filter(p => !ruleResults[String(p.id)]);
-  onLog(`规则命中 ${Object.keys(ruleResults).length} 条；剩余 ${llmPosts.length} 条送 LLM`);
-
-  let classifyBatchId = null;
-  if (llmPosts.length) {
-    const { batchId } = await submitClassifyBatch(llmPosts, {
-      apiKey: process.env.OPENAI_API_KEY,
-      model:  scrapeOpts.classifyModel || 'gpt-4.1-mini',
-    });
-    classifyBatchId = batchId;
-    onLog(`Classify batch 提交：${batchId}`);
-  } else {
-    onLog('全部由规则处理，无需 LLM 批次');
-  }
-
-  // Persist rule pre-results to disk so the next stage can merge them in.
-  const ruleCachePath = join(classifyDir, '_rules.json');
-  writeFileSync(ruleCachePath, JSON.stringify({ ruleResults, allPosts }, null, 2), 'utf-8');
+  // ── 3c. Create classify session — daemon will advance it ───────────────────
+  // Every input file is annotated with this workflow's kol_id; in the
+  // single-KOL workflow path all files belong to the same KOL.
+  const inputFiles = scrapeResult.savedFiles.map(f => ({ file: f.file, kol_id: kolId }));
+  const session = createSession({
+    source:       'workflow',
+    workflow_id:  workflowId,
+    kol_ids:      [kolId],
+    out_root:     outRoot,
+    input_files:  inputFiles,
+    provider,
+    model:        scrapeOpts.classifyModel || defaultModelForProvider(provider),
+  });
+  onLog(`Classify session 创建：${session.id}（${inputFiles.length} 个采集文件 → daemon 接管）`);
 
   updateStage(workflowId, 'classify', {
-    batch_id:      classifyBatchId,
-    out_dir:       classifyDir,
-    rule_cache:    ruleCachePath,
+    session_id: session.id,
   });
-  updateWorkflow(workflowId, { state: classifyBatchId ? 'classify_pending' : 'classify_done' });
+  updateWorkflow(workflowId, { state: WORKFLOW_STATE.CLASSIFY_PENDING });
 
-  return { state: classifyBatchId ? 'classify_pending' : 'classify_done', batchId: classifyBatchId };
+  return { state: WORKFLOW_STATE.CLASSIFY_PENDING, sessionId: session.id };
 }
 
 // ── 4. After classify ─────────────────────────────────────────────────────────
@@ -289,48 +331,55 @@ export async function runScrapeAndSubmitClassify(workflowId, scrapeOpts, onLog =
 export async function tryAdvanceClassify(workflowId) {
   const wf = getWorkflow(workflowId);
   if (!wf) throw new Error(`Workflow ${workflowId} not found`);
-  if (!['classify_pending', 'classify_done'].includes(wf.state)) return { state: wf.state };
+  if (![WORKFLOW_STATE.CLASSIFY_PENDING, WORKFLOW_STATE.CLASSIFY_DONE].includes(wf.state)) return { state: wf.state };
 
-  // Pull cached rule results and original posts.
-  const cachePath = wf.classify.rule_cache;
-  if (!cachePath || !existsSync(cachePath)) throw new Error('Rule cache missing — workflow integrity error');
-  const { ruleResults, allPosts } = JSON.parse(readFileSync(cachePath, 'utf-8'));
+  const sessionId = wf.classify?.session_id;
+  if (!sessionId) throw new Error('Workflow has no classify session — corrupted state');
 
-  let llmResults = {};
-  if (wf.classify.batch_id) {
-    const res = await fetchClassifyResults(wf.classify.batch_id, {
-      apiKey: process.env.OPENAI_API_KEY,
-      wait:   false,
-    });
-    if (res.status !== 'completed') return { state: 'classify_pending', progress: res.progress };
-    llmResults = res.results;
+  let session = getSession(sessionId);
+  if (!session) return { state: WORKFLOW_STATE.CLASSIFY_PENDING, progress: 'session missing' };
+
+  // User pressing 'r' (or auto-timer) → kick session forward immediately.
+  // advanceSession is locked, so it's a no-op if daemon is currently advancing.
+  session = await advanceSession(session);
+
+  if (session?.state === SESSION_STATE.COMPLETED) {
+    return await finalizeWorkflowFromSession(session);
+  }
+  if (session?.state === SESSION_STATE.ERROR) {
+    updateWorkflow(workflowId, { state: WORKFLOW_STATE.ERROR, error: session.error || 'classify session error' });
+    return { state: WORKFLOW_STATE.ERROR, error: session.error };
   }
 
-  const allResults = { ...ruleResults, ...llmResults };
-  const userRisk   = aggregateUserRisk(allPosts, allResults);
+  const progress = `${session.completed}/${session.chunks_total || '?'} 完成 · ${session.batch_ids.length} 已提交`;
+  return { state: WORKFLOW_STATE.CLASSIFY_PENDING, progress };
+}
 
-  // Write classify outputs into the workflow's classify dir
-  const classifiedDir = join(wf.classify.out_dir, 'classified');
-  mkdirSync(classifiedDir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:T.]/g, '').slice(0, 15);
-  const base  = join(classifiedDir, stamp);
+/**
+ * Called by the daemon when a workflow-bound session reaches 'completed'.
+ * Writes per-workflow classify outputs (already done by session.js) and
+ * generates the workflow report. Idempotent — safe to call again.
+ */
+export async function finalizeWorkflowFromSession(session) {
+  if (!session?.workflow_id) return null;
+  const wf = getWorkflow(session.workflow_id);
+  if (!wf) return null;
+  if (wf.state === WORKFLOW_STATE.REPORT_DONE) return { state: WORKFLOW_STATE.REPORT_DONE, reportPath: wf.report?.path };
 
-  const result_files = [];
-  writeFileSync(`${base}.json`,            toClassifierJSON(userRisk, allResults));   result_files.push({ file: `${base}.json`,            label: '综合报告 JSON' });
-  writeFileSync(`${base}_user_risk.csv`,   toUserRiskCSV(userRisk));                  result_files.push({ file: `${base}_user_risk.csv`,   label: '用户风险 CSV'  });
-  writeFileSync(`${base}_flagged.csv`,     toFlaggedPostsCSV(userRisk));              result_files.push({ file: `${base}_flagged.csv`,     label: '标记内容 CSV'  });
-
-  updateStage(workflowId, 'classify', {
-    result_files,
+  updateStage(session.workflow_id, 'classify', {
+    result_files: session.result_files ?? [],
+    summary:      session.summary ?? null,
     completed_at: new Date().toISOString(),
   });
-  updateWorkflow(workflowId, { state: 'classify_done' });
+  updateWorkflow(session.workflow_id, { state: WORKFLOW_STATE.CLASSIFY_DONE });
 
-  // ── Render report ─────────────────────────────────────────────────────────
-  const fresh = getWorkflow(workflowId);
+  const fresh = getWorkflow(session.workflow_id);
   const reportPath = renderReport(fresh);
-  updateStage(workflowId, 'report', { path: reportPath, completed_at: new Date().toISOString() });
-  updateWorkflow(workflowId, { state: 'report_done' });
+  updateStage(session.workflow_id, 'report', {
+    path:         reportPath,
+    completed_at: new Date().toISOString(),
+  });
+  updateWorkflow(session.workflow_id, { state: WORKFLOW_STATE.REPORT_DONE });
 
-  return { state: 'report_done', reportPath };
+  return { state: WORKFLOW_STATE.REPORT_DONE, reportPath };
 }

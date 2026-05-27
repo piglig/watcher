@@ -23,7 +23,7 @@ import { writeFileSync }  from 'fs';
  * @param {boolean}  [opts.debug]
  */
 export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {}) {
-  const { maxTweets = 200, progressFile = null, shouldStop = () => false, debug = false } = opts;
+  const { maxTweets = 200, progressFile = null, shouldStop = () => false, debug = false, onProgress = null } = opts;
   const dbg = (...m) => debug && console.log('[DBG]', ...m);
 
   console.log(`\n[${label}] → ${tabUrl}`);
@@ -66,6 +66,7 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
     }
 
     console.log(`[${label}] ${tweetMap.size} tweets (scroll #${round})`);
+    if (onProgress) onProgress(tweetMap.size);
 
     // P2: early stop — all visible tweets are older than --since
     if (shouldStop(domTweets)) {
@@ -86,10 +87,13 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
       window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
     );
 
-    // Dynamic wait: network idle up to 6s
+    // Throttle: randomized 5-8s wait per round, races networkidle
+    // Twitter authenticated GraphQL ≈ 150 req / 15min ≈ 6s steady-state.
+    // Jitter avoids syncing both tabs into a burst pattern.
+    const waitMs = 5000 + Math.floor(Math.random() * 3000);
     await Promise.race([
-      page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {}),
-      page.waitForTimeout(6000),
+      page.waitForLoadState('networkidle', { timeout: waitMs }).catch(() => {}),
+      page.waitForTimeout(waitMs),
     ]);
 
     // Stale detection

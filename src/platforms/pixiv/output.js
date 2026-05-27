@@ -2,7 +2,9 @@
  * pixiv-output.js — Stats, JSON and CSV output for Pixiv artworks
  */
 
+import Papa from 'papaparse';
 import { formatNumber } from '../../shared/format.js';
+import { normalizeToPosts } from '../../shared/post.js';
 
 export function printPixivStats(artworks) {
   if (!artworks.length) return;
@@ -35,7 +37,7 @@ export function printPixivStats(artworks) {
 }
 
 export function toPixivJSON(artworks) {
-  return JSON.stringify(artworks, null, 2);
+  return JSON.stringify({ posts: normalizeToPosts(artworks) }, null, 2);
 }
 
 const CSV_HEADERS = [
@@ -47,13 +49,7 @@ const CSV_HEADERS = [
 ];
 
 export function toPixivCSV(artworks) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-
-  const rows = artworks.map(a => [
+  const data = artworks.map(a => [
     a.id,
     a.url,
     a.title,
@@ -71,7 +67,6 @@ export function toPixivCSV(artworks) {
     a.is_r18g,
     a.x_restrict,
     a.tags.join(' | '),
-  ].map(esc).join(','));
-
-  return [CSV_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: CSV_HEADERS, data }, { newline: '\n' });
 }

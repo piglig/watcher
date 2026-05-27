@@ -2,7 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
 import StepBar from '../components/StepBar.js';
+import LogPanel from '../components/LogPanel.js';
 import { SYM } from '../theme.js';
+import { useElapsed } from '../hooks/useElapsed.js';
 import {
   startWorkflows,
   tryAdvanceOsint,
@@ -10,33 +12,26 @@ import {
   tryAdvanceClassify,
   getWorkflow,
   STATE_LABELS,
+  WORKFLOW_STATE,
 } from '../../workflow/index.js';
+import { getConfig } from '../../shared/config-store.js';
+import { defaultModelForProvider, inferProvider } from '../../classifier/classifier.js';
 
+const LOG_LIMIT = 14;
 const STAGE_ORDER = ['OSINT', '采集', '分类', '报告'];
 
-function stateToStage(state) {
-  switch (state) {
-    case 'osint_pending':    return 0;
-    case 'osint_done':       return 1;
-    case 'scraping':         return 1;
-    case 'scrape_done':      return 2;
-    case 'classify_pending': return 2;
-    case 'classify_done':    return 3;
-    case 'report_done':      return 3;
-    case 'error':            return 0;
-    default:                 return 0;
-  }
-}
+const STATE_TO_STAGE = {
+  [WORKFLOW_STATE.OSINT_PENDING]:    0,
+  [WORKFLOW_STATE.OSINT_DONE]:       1,
+  [WORKFLOW_STATE.SCRAPING]:         1,
+  [WORKFLOW_STATE.SCRAPE_DONE]:      2,
+  [WORKFLOW_STATE.CLASSIFY_PENDING]: 2,
+  [WORKFLOW_STATE.CLASSIFY_DONE]:    3,
+  [WORKFLOW_STATE.REPORT_DONE]:      3,
+  [WORKFLOW_STATE.ERROR]:            0,
+};
 
-function useElapsed(active) {
-  const [secs, setSecs] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setSecs(s => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [active]);
-  return secs;
-}
+const stateToStage = (state) => STATE_TO_STAGE[state] ?? 0;
 
 export default function WorkflowRun({ config, onNav }) {
   const [logs, setLogs]           = useState([]);
@@ -47,15 +42,34 @@ export default function WorkflowRun({ config, onNav }) {
   const launched      = useRef(false);
   const elapsed       = useElapsed(busy);
   const cdIntervalRef = useRef(null);
+  const startedAt     = useRef(Date.now());
 
-  const log = (line) => setLogs(prev => [...prev.slice(-9), line]);
+  const log = (line) => {
+    const dt    = Math.floor((Date.now() - startedAt.current) / 1000);
+    const mm    = String(Math.floor(dt / 60)).padStart(2, '0');
+    const ss    = String(dt % 60).padStart(2, '0');
+    const stamp = `T+${mm}:${ss}`;
+    setLogs(prev => [...prev.slice(-(LOG_LIMIT - 1)), `${stamp} ${line}`]);
+  };
 
   useInput((input, key) => {
+    if (key.escape) {
+      if (cdIntervalRef.current) {
+        clearInterval(cdIntervalRef.current);
+        cdIntervalRef.current = null;
+      }
+      onNav('menu');
+      return;
+    }
+    if ((wf?.state === WORKFLOW_STATE.OSINT_PENDING || wf?.state === WORKFLOW_STATE.CLASSIFY_PENDING)
+        && (input === 'j' || input === 'J')) {
+      onNav('jobs');
+      return;
+    }
     if (busy) return;
-    if (key.escape) onNav('menu');
-    if (wf?.state === 'osint_pending' && (input === 'r' || input === 'R')) doAdvanceOsint();
-    if (wf?.state === 'osint_done'    && (input === 's' || input === 'S')) doScrape();
-    if (wf?.state === 'classify_pending' && (input === 'r' || input === 'R')) doAdvanceClassify();
+    if (wf?.state === WORKFLOW_STATE.OSINT_PENDING && (input === 'r' || input === 'R')) doAdvanceOsint();
+    if (wf?.state === WORKFLOW_STATE.OSINT_DONE    && (input === 's' || input === 'S')) doScrape();
+    if (wf?.state === WORKFLOW_STATE.CLASSIFY_PENDING && (input === 'r' || input === 'R')) doAdvanceClassify();
   });
 
   const refreshWf = (id) => {
@@ -87,14 +101,15 @@ export default function WorkflowRun({ config, onNav }) {
     }
   };
 
-  const doAdvanceOsint = async () => {
-    if (!wf) return;
+  const doAdvanceOsint = async (idOverride) => {
+    const id = idOverride ?? wf?.id;
+    if (!id) return;
     setBusy(true);
     try {
       log('检索 OSINT 结果...');
-      const res = await tryAdvanceOsint(wf.id);
-      const fresh = refreshWf(wf.id);
-      if (res.state === 'osint_done') {
+      const res = await tryAdvanceOsint(id);
+      const fresh = refreshWf(id);
+      if (res.state === WORKFLOW_STATE.OSINT_DONE) {
         log(`OSINT 完成，slug=${res.slug}。按 s 启动采集。`);
       } else {
         log(`仍在等待：${res.progress ?? '?'}`);
@@ -110,14 +125,24 @@ export default function WorkflowRun({ config, onNav }) {
     if (!wf) return;
     setBusy(true);
     try {
-      const opts = { max: '200', since: '', until: '', headed: false, redditSource: 'arctic' };
+      // scrapeMax 留空 = 全量；用 1e6 远超任何平台 API 自然上限，让 scraper 自然耗尽
+      const saved = getConfig();
+      const configuredMax = (saved.scrapeMax || '').trim();
+      const classifyProvider = inferProvider(saved.model, saved.aiProvider);
+      const opts = {
+        max:          configuredMax || '1000000',
+        since:        '',
+        until:        '',
+        headed:       false,
+        redditSource: 'arctic',
+        classifyProvider,
+        classifyModel:    saved.model || defaultModelForProvider(classifyProvider),
+      };
       const res = await runScrapeAndSubmitClassify(wf.id, opts, log);
-      const fresh = refreshWf(wf.id);
-      if (res.state === 'classify_pending') {
-        log(`Classify batch：${res.batchId}`);
-        log(`稍后回来按 r 拉取结果并生成报告。`);
-      } else {
-        await doAdvanceClassify();
+      refreshWf(wf.id);
+      if (res.state === WORKFLOW_STATE.CLASSIFY_PENDING) {
+        log(`Classify session ${res.sessionId} 已创建 — daemon 在后台推进。`);
+        log(`可安全离开本屏，状态保存在 sessions.json。`);
       }
     } catch (e) {
       setErrorMsg(e?.message ?? String(e));
@@ -126,14 +151,15 @@ export default function WorkflowRun({ config, onNav }) {
     }
   };
 
-  const doAdvanceClassify = async () => {
-    if (!wf) return;
+  const doAdvanceClassify = async (idOverride) => {
+    const id = idOverride ?? wf?.id;
+    if (!id) return;
     setBusy(true);
     try {
       log('检索 Classify 结果...');
-      const res = await tryAdvanceClassify(wf.id);
-      refreshWf(wf.id);
-      if (res.state === 'report_done') {
+      const res = await tryAdvanceClassify(id);
+      refreshWf(id);
+      if (res.state === WORKFLOW_STATE.REPORT_DONE) {
         log(`完成 — 报告：${res.reportPath}`);
       } else {
         log(`仍在等待：${res.progress ?? '?'}`);
@@ -156,9 +182,9 @@ export default function WorkflowRun({ config, onNav }) {
       const initial = getWorkflow(config.workflowId);
       if (!initial) { setErrorMsg(`找不到 Workflow ${config.workflowId}`); setBusy(false); return; }
       setWf(initial);
-      if (initial.state === 'osint_pending')    doAdvanceOsint();
-      else if (initial.state === 'classify_pending') doAdvanceClassify();
-      else if (initial.state === 'classify_done')    doAdvanceClassify();
+      if (initial.state === WORKFLOW_STATE.OSINT_PENDING)    doAdvanceOsint(initial.id);
+      else if (initial.state === WORKFLOW_STATE.CLASSIFY_PENDING) doAdvanceClassify(initial.id);
+      else if (initial.state === WORKFLOW_STATE.CLASSIFY_DONE)    doAdvanceClassify(initial.id);
       else                                       setBusy(false);
     }
   }, []);
@@ -172,7 +198,7 @@ export default function WorkflowRun({ config, onNav }) {
 
     if (busy || !wf) return;
 
-    if (wf.state === 'osint_pending') {
+    if (wf.state === WORKFLOW_STATE.OSINT_PENDING) {
       let cd = 30;
       setCountdown(cd);
       cdIntervalRef.current = setInterval(() => {
@@ -186,7 +212,7 @@ export default function WorkflowRun({ config, onNav }) {
           setCountdown(cd);
         }
       }, 1000);
-    } else if (wf.state === 'osint_done') {
+    } else if (wf.state === WORKFLOW_STATE.OSINT_DONE) {
       let cd = 3;
       setCountdown(cd);
       cdIntervalRef.current = setInterval(() => {
@@ -200,7 +226,7 @@ export default function WorkflowRun({ config, onNav }) {
           setCountdown(cd);
         }
       }, 1000);
-    } else if (wf.state === 'classify_pending') {
+    } else if (wf.state === WORKFLOW_STATE.CLASSIFY_PENDING) {
       let cd = 30;
       setCountdown(cd);
       cdIntervalRef.current = setInterval(() => {
@@ -226,8 +252,8 @@ export default function WorkflowRun({ config, onNav }) {
 
   const stage = wf ? stateToStage(wf.state) : 0;
   const stateColor =
-    wf?.state === 'error'        ? 'red'    :
-    wf?.state === 'report_done'  ? 'green'  :
+    wf?.state === WORKFLOW_STATE.ERROR        ? 'red'    :
+    wf?.state === WORKFLOW_STATE.REPORT_DONE  ? 'green'  :
     busy                          ? 'cyan'   : 'yellow';
 
   return (
@@ -247,24 +273,18 @@ export default function WorkflowRun({ config, onNav }) {
             {wf.kol?.name}  ·  {wf.id}
           </Text>
         )}
-        {countdown !== null && !busy && wf?.state === 'osint_pending' && (
+        {countdown !== null && !busy && wf?.state === WORKFLOW_STATE.OSINT_PENDING && (
           <Text color="gray" dimColor>  下次自动检索：{countdown}s  [r 立即检索]</Text>
         )}
-        {countdown !== null && !busy && wf?.state === 'osint_done' && (
+        {countdown !== null && !busy && wf?.state === WORKFLOW_STATE.OSINT_DONE && (
           <Text color="gray" dimColor>  即将自动开始采集…（{countdown}s）  [s 立即采集]</Text>
         )}
-        {countdown !== null && !busy && wf?.state === 'classify_pending' && (
+        {countdown !== null && !busy && wf?.state === WORKFLOW_STATE.CLASSIFY_PENDING && (
           <Text color="gray" dimColor>  下次自动检索：{countdown}s  [r 立即检索]</Text>
         )}
       </Box>
 
-      {logs.length > 0 && (
-        <Box flexDirection="column" borderStyle="round" borderColor="gray" borderDimColor paddingX={2} paddingY={0}>
-          {logs.map((l, i) => (
-            <Text key={i} color="gray" dimColor wrap="truncate">  {l}</Text>
-          ))}
-        </Box>
-      )}
+      <LogPanel logs={logs} limit={LOG_LIMIT} />
 
       {errorMsg && (
         <Box borderStyle="round" borderColor="red" paddingX={2}>
@@ -272,7 +292,7 @@ export default function WorkflowRun({ config, onNav }) {
         </Box>
       )}
 
-      {wf?.state === 'report_done' && wf.report?.path && (
+      {wf?.state === WORKFLOW_STATE.REPORT_DONE && wf.report?.path && (
         <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={2} paddingY={0} gap={0}>
           <Text bold color="green">{SYM.check} 报告已生成</Text>
           <Text color="cyan" wrap="truncate">  HTML {wf.report.path}</Text>
@@ -282,11 +302,13 @@ export default function WorkflowRun({ config, onNav }) {
       )}
 
       <KeyBar hints={(() => {
-        if (busy) return [];
-        if (wf?.state === 'osint_pending')    return [{ key: 'r', label: '立即检索' }, { key: 'ESC', label: '返回菜单' }];
-        if (wf?.state === 'osint_done')       return [{ key: 's', label: '立即采集' }, { key: 'ESC', label: '返回菜单' }];
-        if (wf?.state === 'classify_pending') return [{ key: 'r', label: '立即检索' }, { key: 'ESC', label: '返回菜单' }];
-        return [{ key: 'ESC', label: '返回菜单' }];
+        const jobsHint = { key: 'j', label: '前往分类任务列表' };
+        const escHint  = { key: 'ESC', label: '返回菜单' };
+        if (busy) return [escHint];
+        if (wf?.state === WORKFLOW_STATE.OSINT_PENDING)    return [{ key: 'r', label: '立即检索' }, jobsHint, escHint];
+        if (wf?.state === WORKFLOW_STATE.OSINT_DONE)       return [{ key: 's', label: '立即采集' }, escHint];
+        if (wf?.state === WORKFLOW_STATE.CLASSIFY_PENDING) return [{ key: 'r', label: '立即检索' }, jobsHint, escHint];
+        return [escHint];
       })()} />
     </Box>
   );

@@ -2,7 +2,9 @@
  * tiktok-output.js — Stats, JSON and CSV for TikTok data
  */
 
+import Papa from 'papaparse';
 import { formatNumber } from '../../shared/format.js';
+import { normalizeToPosts } from '../../shared/post.js';
 
 export function printTikTokStats(profile, videos) {
   console.log('Aggregate stats');
@@ -46,7 +48,7 @@ export function printTikTokStats(profile, videos) {
 }
 
 export function toTikTokJSON(profile, videos) {
-  return JSON.stringify({ profile, videos }, null, 2);
+  return JSON.stringify({ profile, posts: normalizeToPosts(videos) }, null, 2);
 }
 
 const VIDEO_HEADERS = [
@@ -58,13 +60,7 @@ const VIDEO_HEADERS = [
 ];
 
 export function toTikTokCSV(videos) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-
-  const rows = videos.map(v => [
+  const data = videos.map(v => [
     v.id,
     v.url,
     v.thumbnail ?? '',
@@ -82,9 +78,8 @@ export function toTikTokCSV(videos) {
     v.music.title,
     v.music.author,
     v.hashtags.join(' '),
-  ].map(esc).join(','));
-
-  return [VIDEO_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: VIDEO_HEADERS, data }, { newline: '\n' });
 }
 
 const COMMENT_HEADERS = [
@@ -95,16 +90,10 @@ const COMMENT_HEADERS = [
 ];
 
 export function toTikTokCommentsCSV(videos) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-
-  const rows = [];
+  const data = [];
   for (const v of videos) {
     for (const c of (v.comments ?? [])) {
-      rows.push([
+      data.push([
         c.id,
         c.video_id,
         c.text,
@@ -116,9 +105,8 @@ export function toTikTokCommentsCSV(videos) {
         c.metrics.replies,
         c.author_reply?.text ?? '',
         c.author_reply?.created_at ?? '',
-      ].map(esc).join(','));
+      ]);
     }
   }
-
-  return [COMMENT_HEADERS.join(','), ...rows].join('\n');
+  return Papa.unparse({ fields: COMMENT_HEADERS, data }, { newline: '\n' });
 }

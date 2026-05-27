@@ -2,7 +2,9 @@
  * reddit-output.js — Terminal table, stats, JSON and CSV for Reddit items
  */
 
+import Papa from 'papaparse';
 import { formatNumber } from '../../shared/format.js';
+import { normalizeToPosts } from '../../shared/post.js';
 
 // ── Terminal table ────────────────────────────────────────────────────────────
 
@@ -93,7 +95,7 @@ export function printRedditStats(items) {
 // ── Serialization ─────────────────────────────────────────────────────────────
 
 export function toRedditJSON(items) {
-  return JSON.stringify(items, null, 2);
+  return JSON.stringify({ posts: normalizeToPosts(items) }, null, 2);
 }
 
 const CSV_HEADERS = [
@@ -104,14 +106,7 @@ const CSV_HEADERS = [
 ];
 
 export function toRedditCSV(items) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
-  };
-
-  const rows = items.map(i => [
+  const data = items.map(i => [
     i.id,
     i.type,
     i.url,
@@ -128,7 +123,6 @@ export function toRedditCSV(items) {
     i.flair                ?? '',
     i.is_nsfw              ?? false,
     i.created_at,
-  ].map(esc).join(','));
-
-  return [CSV_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: CSV_HEADERS, data }, { newline: '\n' });
 }

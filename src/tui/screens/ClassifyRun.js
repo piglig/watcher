@@ -1,209 +1,83 @@
-import React, { useState, useEffect, useRef } from 'react';
+/**
+ * ClassifyRun — manual "AI 分类" entry from ClassifySetup or JobsList resume.
+ *
+ * If config.sessionId is supplied (from JobsList): just render that session.
+ * Otherwise: create a new session from the provided inputFiles, then render.
+ * Daemon (App.js) takes care of all advancement.
+ */
+
+import React, { useEffect, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
-import { RiskBadge } from '../components/StatusBadge.js';
 import { SYM } from '../theme.js';
-import { runClassify } from '../classify-runner.js';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function fmtElapsed(secs) {
-  const m = Math.floor(secs / 60).toString().padStart(2, '0');
-  const s = (secs % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
-}
-
-function logColor(line) {
-  if (line.startsWith('[ERR]'))  return 'red';
-  if (line.startsWith('[WARN]')) return 'yellow';
-  return 'gray';
-}
-
-function LogLine({ text }) {
-  const color  = logColor(text);
-  const prefix = text.startsWith('[ERR]')  ? `${SYM.cross} `
-               : text.startsWith('[WARN]') ? `${SYM.warn}  `
-               : '  ';
-  const body = text.replace(/^\[(ERR|WARN)\] /, '');
-  return (
-    <Box gap={0}>
-      <Text color={color}>{prefix}</Text>
-      <Text color={color} dimColor wrap="truncate">{body}</Text>
-    </Box>
-  );
-}
-
-function useElapsed(active) {
-  const [secs, setSecs] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setSecs(s => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [active]);
-  return secs;
-}
-
-// ── Main component ────────────────────────────────────────────────────────────
-
-const RECENT_LINES = 5;
+import { createSession } from '../../shared/sessions-store.js';
+import { advanceSession } from '../../classifier/session.js';
+import { defaultModelForProvider } from '../../classifier/classifier.js';
+import { useSession } from '../hooks/useSession.js';
+import SessionView from '../components/SessionView.js';
+import { join, resolve } from 'path';
 
 export default function ClassifyRun({ config, onNav }) {
-  const [recentLogs, setRecentLogs] = useState([]);
-  const [status, setStatus]         = useState('running');
-  const [result, setResult]         = useState(null);
-  const [errorMsg, setError]        = useState('');
+  const [sessionId, setSessionId] = useState(config?.sessionId ?? null);
+  const [errorMsg,  setErrorMsg]  = useState('');
+  const session = useSession(sessionId);
 
-  const rawRef    = useRef([]);
-  const committed = useRef(0);
-  const elapsed   = useElapsed(status === 'running');
-
-  useInput((_, key) => {
-    if (key.escape && status !== 'running') onNav('menu');
+  useInput((input, key) => {
+    if (key.escape) { onNav('menu'); return; }
+    if (input === 'j' || input === 'J') onNav('jobs');
   });
 
   useEffect(() => {
-    let cancelled = false;
+    if (sessionId) return;                          // already attached to a session
+    const inputFiles = config?.inputFiles ?? [];
+    if (!inputFiles.length) {
+      setErrorMsg('未提供输入文件，且未指定 sessionId。');
+      return;
+    }
 
-    const orig = {
-      log:   console.log.bind(console),
-      error: console.error.bind(console),
-      warn:  console.warn.bind(console),
-    };
+    // Manual entry: files are paths under <outDir>/<kolId>/scrape/...; pull
+    // the kolId out of the path. The convention is fully owned by this app
+    // (scrape runner writes them), so this regex is canonical, not heuristic.
+    const annotated = [];
+    const skipped   = [];
+    for (const file of inputFiles) {
+      const norm = String(file).replace(/\\/g, '/');
+      const m = norm.match(/\/([^/]+)\/scrape\/[^/]+\/[^/]+\//);
+      if (m) annotated.push({ file, kol_id: m[1] });
+      else   skipped.push(file);
+    }
+    if (skipped.length) {
+      setErrorMsg(`${skipped.length} 个输入文件路径不符合 <outDir>/<kolId>/scrape/<platform>/<handle>/ 结构，已跳过：\n${skipped.slice(0, 3).join('\n')}`);
+      return;
+    }
 
-    const push = (...args) => {
-      const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-      rawRef.current.push(line);
-    };
-
-    console.log   = push;
-    console.error = (...a) => push('[ERR] '  + a.join(' '));
-    console.warn  = (...a) => push('[WARN] ' + a.join(' '));
-
-    const onLog = (msg) => { rawRef.current.push(msg); };
-
-    const flush = () => {
-      if (cancelled) return;
-      const all = rawRef.current;
-      if (all.length <= committed.current) return;
-      committed.current = all.length;
-      setRecentLogs(all.slice(-RECENT_LINES));
-    };
-
-    const timer = setInterval(flush, 500);
-
-    runClassify(config, onLog)
-      .then(res => {
-        if (!cancelled) {
-          setResult(res);
-          setStatus(res.status === 'submitted' ? 'submitted' : 'done');
-        }
-      })
-      .catch(err => { if (!cancelled) { setError(err.message ?? String(err)); setStatus('error'); } })
-      .finally(() => {
-        clearInterval(timer);
-        flush();
-        Object.assign(console, orig);
-      });
-
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      Object.assign(console, orig);
-    };
-  }, []); // eslint-disable-line
-
-  const topUsers = result?.userRisk?.slice(0, 5) ?? [];
-
-  const statusColor =
-    status === 'error'     ? 'red'    :
-    status === 'done'      ? 'green'  :
-    status === 'submitted' ? 'yellow' : 'cyan';
+    const s = createSession({
+      source:      'manual',
+      input_files: annotated,
+      out_root:    resolve(config?.outDir ?? './out/'),
+      provider:    config?.aiProvider,
+      model:       config?.model ?? defaultModelForProvider(config?.aiProvider),
+    });
+    setSessionId(s.id);
+    advanceSession(s).catch(() => {});
+  }, [sessionId, config]);
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
+      <Text bold color="cyan">AI 分类</Text>
 
-      {/* ── Status panel ── */}
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={statusColor}
-        paddingX={2}
-        paddingY={0}
-      >
-        <Box gap={2}>
-          <Text bold color={statusColor}>
-            {status === 'running'    ? `${SYM.run} AI 分类运行中`
-             : status === 'done'     ? `${SYM.check} 分类完成`
-             : status === 'submitted'? `${SYM.dot} 批次已提交`
-             :                         `${SYM.cross} 出错`}
-          </Text>
-          {status === 'running' && (
-            <Text color="gray" dimColor>{fmtElapsed(elapsed)}</Text>
-          )}
+      {errorMsg ? (
+        <Box borderStyle="round" borderColor="red" paddingX={2}>
+          <Text color="red">{SYM.cross} {errorMsg}</Text>
         </Box>
-
-        {status === 'running' && (
-          recentLogs.length === 0
-            ? <Text color="gray" dimColor>  正在启动...</Text>
-            : recentLogs.map((line, i) => <LogLine key={i} text={line} />)
-        )}
-
-        {status === 'error' && (
-          <Text color="red" wrap="truncate">  {errorMsg}</Text>
-        )}
-      </Box>
-
-      {/* ── Submitted info ── */}
-      {status === 'submitted' && result && (
-        <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={2}>
-          <Text color="yellow" bold>
-            {SYM.dot} 批次已提交{result.batchId ? ` — ${result.batchId}` : ''}
-          </Text>
-          <Text color="gray" dimColor>
-            结果通常在 1–24 小时内就绪，请在"查看分类任务"中检索。
-          </Text>
-        </Box>
+      ) : (
+        <SessionView session={session} emptyText="正在创建 session…" />
       )}
 
-      {/* ── Done result ── */}
-      {status === 'done' && result && (
-        <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={2} paddingY={0} gap={1}>
-          <Text bold color="green">
-            {SYM.check} 完成  共 {result.postCount} 条内容
-          </Text>
-
-          {topUsers.length > 0 && (
-            <Box flexDirection="column">
-              <Text color="gray" dimColor>风险最高用户（前 {topUsers.length}）</Text>
-              {topUsers.map(u => (
-                <Box key={u.author_id} gap={3}>
-                  <RiskBadge level={u.risk_level} />
-                  <Text>@{u.username}</Text>
-                  <Text color="gray" dimColor>
-                    {u.risk_score} 分 · {u.flagged_post_count} 条标记
-                  </Text>
-                </Box>
-              ))}
-            </Box>
-          )}
-
-          {result.savedFiles?.length > 0 && (
-            <Box flexDirection="column">
-              <Text color="gray" dimColor>输出文件</Text>
-              {result.savedFiles.map(({ file, label }) => (
-                <Box key={file} gap={2}>
-                  <Text color="gray" dimColor>{SYM.arrow}</Text>
-                  <Text color="cyan">{label}</Text>
-                </Box>
-              ))}
-            </Box>
-          )}
-        </Box>
-      )}
-
-      {status !== 'running' && (
-        <KeyBar hints={[{ key: 'ESC', label: '返回主菜单' }]} />
-      )}
+      <KeyBar hints={[
+        { key: 'j',   label: '前往分类任务列表' },
+        { key: 'ESC', label: '返回菜单' },
+      ]} />
     </Box>
   );
 }

@@ -1,7 +1,7 @@
 /**
  * prompt.js — OSINT social-media tracking prompt for Grok 4.3.
  *
- * Placeholders: {KOL_NAME}, {SEED_URL}, {TODAY}.
+ * Placeholders: {KOL_NAME}, {SEED_URL}, {TODAY}, {BIO_EXTRACT}.
  */
 
 export const OSINT_PROMPT_TEMPLATE = `# Role
@@ -30,6 +30,16 @@ export const OSINT_PROMPT_TEMPLATE = `# Role
 - KOL Name: {KOL_NAME}
 - Seed URL: {SEED_URL}
 - Today (UTC): {TODAY}
+
+--------------------------------------------------
+# Pre-extracted Bio (Ground Truth from Seed Page)
+
+以下信息由系统直接从 Seed URL 的 bootstrap JSON 提取，**视为强证据**。
+- 所有 "Bio links" 必须出现在 verified_accounts 或 evidence_urls 中（除非该链接经核实已失效）。
+- 这些链接是 KOL 在其官方主页公开声明的对外引流，**优先用于 Step 5 Identity Correlation**。
+- 当 verified_accounts 与此处链接出现矛盾时，以此处为准。
+
+{BIO_EXTRACT}
 
 --------------------------------------------------
 # Core Rules
@@ -250,7 +260,55 @@ today = {TODAY}
 - Substack
 
 --------------------------------------------------
-## Step 5 — Identity Correlation
+## Step 5 — Topic Extraction (per account)
+
+对每个候选账号，基于实际可观察的发帖 / 视频 / 直播标题，
+提炼该账号最主要的 **1~5 个核心话题**，写入该账号的 \`topics\` 数组。
+
+### 话题颗粒度：偏「具体 IP / 作品 / 品牌」
+
+- 推荐：游戏 / 作品 / IP 的**中文官方名 / 中文社区主流叫法**
+  - "原神"、"鸣潮"、"绝区零"、"崩坏：星穹铁道"
+  - "明日方舟：终末地"、"无限暖暖"、"瓦罗兰特"、"使命召唤"
+  - "原神 5.x 攻略"、"星铁角色实战"
+
+- 也可：明确的内容类型（仅当账号没有强 IP 绑定时）
+  - "ASMR"、"Cosplay"、"舞蹈翻跳"、"游戏剪辑"、"VTuber 翻唱"
+
+- 不要：过于宽泛的分类
+  - "游戏"、"动漫"、"娱乐"、"二次元"、"美女"
+  - "lifestyle"、"entertainment"、"gaming"（除非真的找不出更具体的）
+
+### 取证要求
+
+- 每个 topic 必须能在该账号近 30 条公开内容中找到至少 2 次出现
+  （tag、标题、视频内容、标题里出现的 IP 名等）
+- 不在标题 / 标签 / 封面文字 / bio 里出现的话题，不输出
+- 不要靠"该 KOL 看起来像玩 X"猜测
+- 不要靠平台分类标签（platform category）填充
+
+### 语言：统一输出中文
+
+无论 KOL 自己使用什么语言，topic **统一输出中文**，便于跨 KOL 横向对比与检索。
+
+- 英文 IP / 作品名 → 用中文官方名或中文社区主流译名
+  - "Genshin Impact" → "原神"
+  - "Wuthering Waves" → "鸣潮"
+  - "Honkai: Star Rail" → "崩坏：星穹铁道"
+  - "Valorant" → "无畏契约"
+- 日韩 IP 同理 → 用中文圈主流叫法
+  - "ホロライブ" → "Hololive"（无官方中文名时保留通用英文名，下同）
+  - "にじさんじ" → "彩虹社"
+- 没有任何中文名 / 中文社区也直接使用原名的（小众外文专有名词）→ 保留原名
+- 不要直译标题或描述文本，仅对 IP / 作品 / 品牌 / 内容类型做归一化
+
+### 顺序
+
+按"账号上的内容占比"从高到低排序。
+第一个 topic 必须是该账号最主要的内容方向。
+
+--------------------------------------------------
+## Step 6 — Identity Correlation
 
 重点寻找：
 
@@ -268,7 +326,7 @@ today = {TODAY}
 - 内容发布时间同步
 
 --------------------------------------------------
-## Step 6 — Historical Trace
+## Step 7 — Historical Trace
 
 尝试识别：
 
@@ -291,7 +349,7 @@ today = {TODAY}
 只能作为 suspected 信息输出。
 
 --------------------------------------------------
-## Step 7 — Recursive Expansion
+## Step 8 — Recursive Expansion
 
 优先采用"递归式扩散搜索"，而非机械平台遍历：
 
@@ -344,6 +402,11 @@ Seed
 
       "historical_handles": [],
 
+      "topics": [
+        "原神",
+        "鸣潮"
+      ],
+
       "verification_evidence": [
         "",
         ""
@@ -375,6 +438,8 @@ Seed
 
       "historical_handles": [],
 
+      "topics": [],
+
       "matched_signals": {
         "avatar_match": false,
         "bio_match": false,
@@ -390,9 +455,10 @@ Seed
   ]
 }`;
 
-export function buildPrompt(name, seedUrl, today) {
+export function buildPrompt(name, seedUrl, today, bioExtract = '(none)') {
   return OSINT_PROMPT_TEMPLATE
     .replaceAll('{KOL_NAME}', name)
     .replaceAll('{SEED_URL}', seedUrl)
-    .replaceAll('{TODAY}', today);
+    .replaceAll('{TODAY}', today)
+    .replaceAll('{BIO_EXTRACT}', bioExtract);
 }

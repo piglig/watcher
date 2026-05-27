@@ -2,6 +2,7 @@
  * classifier-output.js — Stats, JSON and CSV for classifier results
  */
 
+import Papa from 'papaparse';
 import { CATEGORIES } from './classifier.js';
 
 export function printClassifierStats(userRisks, { withImages = 0, totalPosts: tp = 0 } = {}) {
@@ -37,8 +38,8 @@ export function printClassifierStats(userRisks, { withImages = 0, totalPosts: tp
   console.log('');
 }
 
-export function toClassifierJSON(userRisks, results) {
-  return JSON.stringify({ user_risks: userRisks, post_results: results }, null, 2);
+export function toClassifierJSON(userRisks, results, sourceStats) {
+  return JSON.stringify({ user_risks: userRisks, post_results: results, source_stats: sourceStats }, null, 2);
 }
 
 const USER_RISK_HEADERS = [
@@ -49,12 +50,7 @@ const USER_RISK_HEADERS = [
 ];
 
 export function toUserRiskCSV(userRisks) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const rows = userRisks.map(u => [
+  const data = userRisks.map(u => [
     u.author_id,
     u.username,
     u.risk_level,
@@ -64,8 +60,8 @@ export function toUserRiskCSV(userRisks) {
     u.severe_post_count,
     u.top_categories.join(' '),
     ...CATEGORIES.map(c => u.category_averages[c] ?? 0),
-  ].map(esc).join(','));
-  return [USER_RISK_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: USER_RISK_HEADERS, data }, { newline: '\n' });
 }
 
 const FLAGGED_HEADERS = [
@@ -75,12 +71,7 @@ const FLAGGED_HEADERS = [
 ];
 
 export function toFlaggedPostsCSV(userRisks) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const rows = [];
+  const data = [];
   for (const u of userRisks) {
     for (const p of u.flagged_posts) {
       const reasonSummary = Object.entries(p.reasons ?? {})
@@ -89,7 +80,7 @@ export function toFlaggedPostsCSV(userRisks) {
       const rtFrom = p.rt_from
         ? `@${p.rt_from.username ?? ''}/${p.rt_from.tweet_id ?? ''}`
         : '';
-      rows.push([
+      data.push([
         u.author_id,
         u.username,
         p.id,
@@ -101,8 +92,8 @@ export function toFlaggedPostsCSV(userRisks) {
         ...CATEGORIES.map(c => p.score[c] ?? 0),
         p.text ?? '',
         reasonSummary,
-      ].map(esc).join(','));
+      ]);
     }
   }
-  return [FLAGGED_HEADERS.join(','), ...rows].join('\n');
+  return Papa.unparse({ fields: FLAGGED_HEADERS, data }, { newline: '\n' });
 }

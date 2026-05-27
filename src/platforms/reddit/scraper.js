@@ -9,6 +9,8 @@
  *   - User posts + comments  (u/username)
  */
 
+import pRetry from 'p-retry';
+
 const BASE       = 'https://www.reddit.com';
 const USER_AGENT = 'nodejs:twitter-scraper:1.0 (open-source scraper)';
 const DELAY_MS   = 750;   // ~80 req/min — safely below the 60/min public limit
@@ -17,39 +19,58 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
 
-async function redditFetch(path, params = {}, retries = 3) {
+async function redditFetch(path, params = {}) {
   const url = new URL(BASE + path);
   url.searchParams.set('raw_json', '1');
   for (const [k, v] of Object.entries(params)) {
     if (v != null) url.searchParams.set(k, String(v));
   }
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(url.toString(), {
-      headers: { 'User-Agent': USER_AGENT },
-    });
+  return pRetry(async () => {
+    const res = await fetch(url.toString(), { headers: { 'User-Agent': USER_AGENT } });
 
     if (res.status === 429) {
       const wait = parseInt(res.headers.get('retry-after') ?? '60', 10) * 1000;
-      console.warn(`[WARN] Rate limit 429 — waiting ${Math.ceil(wait / 1000)}s...`);
+      console.warn(`[reddit] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
       await sleep(wait);
-      continue;
+      throw new Error('reddit: 429 rate-limited');                       // → retry
     }
 
-    if (res.status === 404) return null;
+    if (res.status === 404) return null;                                  // terminal success
 
-    if (!res.ok) {
-      if (attempt < retries) { await sleep(2000 * (attempt + 1)); continue; }
-      throw new Error(`Reddit API ${res.status} ${res.statusText}: ${path}`);
-    }
+    if (!res.ok) throw new Error(`Reddit API ${res.status} ${res.statusText}: ${path}`);
 
     return res.json();
-  }
-
-  throw new Error(`Reddit API: max retries exceeded for ${path}`);
+  }, { retries: 5, factor: 2, minTimeout: 2000, maxTimeout: 60_000 });
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
+
+const MIME_EXT = { 'image/jpg': 'jpg', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif' };
+
+function extractPostMedia(d) {
+  const out = [];
+
+  // Gallery posts: reconstruct unsigned i.redd.it URLs from metadata.
+  // (media_metadata.s.u is a signed preview.redd.it link that expires in ~1-2h.)
+  if (d.is_gallery && d.media_metadata) {
+    for (const m of Object.values(d.media_metadata)) {
+      const ext = MIME_EXT[m?.m];
+      if (m?.id && ext) out.push({ type: 'photo', url: `https://i.redd.it/${m.id}.${ext}` });
+    }
+    return out;
+  }
+
+  // Direct image post: d.url points at i.redd.it / i.imgur.com
+  if (d.post_hint === 'image' && d.url) {
+    out.push({ type: 'photo', url: d.url });
+  }
+
+  // preview.redd.it URLs are HMAC-signed and expire in 1-2h — skipping; by the
+  // time the classify batch runs, OpenAI can't fetch them, so they'd just burn
+  // ~85 tokens per dead image without contributing signal.
+  return out;
+}
 
 function parsePost(child) {
   if (child.kind !== 't3') return null;
@@ -60,6 +81,7 @@ function parsePost(child) {
     title:      d.title ?? '',
     text:       d.selftext ?? '',
     link_url:   d.is_self ? null : d.url,
+    media:      extractPostMedia(d),
     created_at: new Date(d.created_utc * 1000).toISOString(),
     author:     { username: d.author },
     subreddit:  d.subreddit,

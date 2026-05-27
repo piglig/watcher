@@ -59,6 +59,7 @@ export async function scrapeUser(username, context, opts = {}) {
     until = null,
     keyword = null,
     progressFile = null,
+    onProgress = null,
   } = opts;
 
   const profileUrl = `https://x.com/${username}`;
@@ -98,7 +99,10 @@ export async function scrapeUser(username, context, opts = {}) {
       return [];
     }
 
-    const scrollOpts = { maxTweets: max, progressFile, shouldStop, debug };
+    const userProgress = onProgress
+      ? (count) => onProgress(`@${username}: ${count} 条`)
+      : null;
+    const scrollOpts = { maxTweets: max, progressFile, shouldStop, debug, onProgress: userProgress };
     await Promise.all([
       scrollTab(page1, profileUrl,                   'Tweets',           tweetMap, state, scrollOpts),
       scrollTab(page2, `${profileUrl}/with_replies`, 'Tweets & Replies', tweetMap, state, scrollOpts),

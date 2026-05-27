@@ -25,15 +25,16 @@
     "src/"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
-    "cli":       "node bin/cli.js",
-    "tui":       "node bin/tui.js",
+    "cli": "node bin/cli.js",
+    "tui": "node bin/tui.js",
     "build:tui": "node scripts/build-tui.js",
-    "dev:tui":   "node scripts/build-tui.js --watch"
+    "dev:tui": "node scripts/build-tui.js --watch"
   },
   "dependencies": {
+    "@google/genai": "^2.4.0",
     "cloakbrowser": "latest",
     "commander": "^14.0.3",
     "glob": "^13.0.6",
@@ -41,9 +42,14 @@
     "ink": "^7.0.3",
     "ink-select-input": "^6.2.0",
     "ink-text-input": "^6.0.0",
+    "obscenity": "^0.4.6",
     "openai": "^6.38.0",
+    "p-limit": "^7.3.0",
+    "p-retry": "^8.0.0",
+    "papaparse": "^5.5.3",
     "playwright-core": "latest",
-    "react": "^19.2.6"
+    "react": "^19.2.6",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "esbuild": "^0.28.0"

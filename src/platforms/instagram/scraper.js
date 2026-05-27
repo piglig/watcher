@@ -218,11 +218,61 @@ function parsePost(node) {
 
 // ── Deep-search for posts in a raw JSON tree ──────────────────────────────────
 
-function findPostsInObj(obj, results, depth = 0) {
+function findPostsInObj(obj, results, depth = 0, signals = null) {
   if (depth > 30 || !obj || typeof obj !== 'object') return;
   if (Array.isArray(obj)) {
-    for (const item of obj) findPostsInObj(item, results, depth + 1);
+    for (const item of obj) findPostsInObj(item, results, depth + 1, signals);
     return;
+  }
+
+  // Pagination signals — only accept when tied to the target user, otherwise
+  // a recommended/sidebar user's `page_info` or post `count` could trick us
+  // into stopping early. signals.targetUsername must be set (lowercase).
+  if (signals?.targetUsername) {
+    const isTargetUser =
+      obj.username &&
+      String(obj.username).toLowerCase() === signals.targetUsername;
+
+    if (isTargetUser) {
+      // Capture the target's numeric ID — used by the final author filter to
+      // catch posts that arrive without author.username populated.
+      if (obj.id)       signals.targetId = String(obj.id);
+      else if (obj.pk)  signals.targetId = String(obj.pk);
+
+      // edge_owner_to_timeline_media: GraphQL-shaped user.timeline
+      const tl = obj.edge_owner_to_timeline_media;
+      if (tl) {
+        if (typeof tl.count === 'number')               signals.expectedTotal = tl.count;
+        if (tl.page_info?.has_next_page === false)      signals.feedExhausted = true;
+      }
+      // Newer SSR exposes total as user.media_count
+      if (typeof obj.media_count === 'number') {
+        signals.expectedTotal = obj.media_count;
+      }
+
+      // Profile metadata — accept only positive follower counts (feed/clips
+      // API responses include user blobs with follower_count=0 placeholders;
+      // the authoritative count comes from web_profile_info SSR).
+      const fc = obj.edge_followed_by?.count ?? obj.follower_count;
+      if (typeof fc === 'number' && fc > 0) signals.followers = fc;
+
+      if (typeof obj.full_name === 'string' && obj.full_name && !signals.profileName) {
+        signals.profileName = obj.full_name;
+      }
+      if (typeof obj.is_verified === 'boolean') {
+        signals.verified = obj.is_verified || signals.verified;
+      }
+      if (typeof obj.biography === 'string' && !signals.biography) {
+        signals.biography = obj.biography;
+      }
+    }
+
+    // API v1 feed responses: `user` sibling + `more_available` boolean
+    if (obj.user?.username &&
+        String(obj.user.username).toLowerCase() === signals.targetUsername &&
+        obj.more_available === false) {
+      signals.feedExhausted = true;
+    }
   }
 
   // Edge-based GraphQL nodes
@@ -237,17 +287,17 @@ function findPostsInObj(obj, results, depth = 0) {
     if (p) { results.push(p); return; }
   }
 
-  for (const val of Object.values(obj)) findPostsInObj(val, results, depth + 1);
+  for (const val of Object.values(obj)) findPostsInObj(val, results, depth + 1, signals);
 }
 
-async function extractSSRPosts(page) {
+async function extractSSRPosts(page, state = null) {
   const scriptTexts = await page.evaluate(() =>
     Array.from(document.querySelectorAll('script[type="application/json"]'))
       .map(s => s.textContent)
   );
   const results = [];
   for (const text of scriptTexts) {
-    try { findPostsInObj(JSON.parse(text), results); } catch { /* skip malformed */ }
+    try { findPostsInObj(JSON.parse(text), results, 0, state); } catch { /* skip malformed */ }
   }
   return results;
 }
@@ -289,7 +339,7 @@ export function attachInstagramInterceptor(page, postMap, state, opts = {}) {
       }
 
       const found = [];
-      findPostsInObj(json, found);
+      findPostsInObj(json, found, 0, state);
       dbg(`XHR parsed → ${found.length} posts  (url: ${url.slice(0, 80)})`);
       for (const p of found) {
         if (!postMap.has(p.id)) postMap.set(p.id, p);
@@ -303,7 +353,7 @@ export function attachInstagramInterceptor(page, postMap, state, opts = {}) {
 // ── Scroll loop ───────────────────────────────────────────────────────────────
 
 async function scrollPage(page, postMap, state, opts = {}) {
-  const { max = 200, debug = false } = opts;
+  const { max = 200, debug = false, onProgress = null } = opts;
   const dbg = (...m) => debug && console.log('[DBG]', ...m);
 
   let staleRounds = 0;
@@ -315,13 +365,25 @@ async function scrollPage(page, postMap, state, opts = {}) {
   while (postMap.size < max && staleRounds < 6) {
     round++;
 
+    // Early stop: Instagram signaled feed exhaustion or we reached the user's total post count
+    if (state.feedExhausted) {
+      console.log(`Instagram: feed exhausted (has_next_page=false). Stopping at ${postMap.size}.`);
+      break;
+    }
+    if (state.expectedTotal && postMap.size >= state.expectedTotal) {
+      console.log(`Instagram: reached profile total (${state.expectedTotal}). Stopping.`);
+      break;
+    }
+
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
       console.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
       await page.waitForTimeout(pause);
     }
 
-    console.log(`Instagram: ${postMap.size} collected (scroll #${round})`);
+    const totalHint = state.expectedTotal ? ` / ~${state.expectedTotal}` : '';
+    console.log(`Instagram: ${postMap.size}${totalHint} collected (scroll #${round})`);
+    if (onProgress) onProgress(postMap.size, state.expectedTotal);
 
     for (let i = 0; i < 15; i++) {
       await page.mouse.wheel(0, 600);
@@ -380,15 +442,30 @@ export async function scrapeInstagramUser(username, context, opts = {}) {
     max         = 1000,
     debug       = false,
     reels       = true,   // also scrape /reels/ tab
+    onProgress  = null,
     ...filterOpts
   } = opts;
+  const userProgress = onProgress
+    ? (count, total) => onProgress(`@${username}: ${count}${total ? ` / ${total}` : ''} 条`)
+    : null;
 
   console.log(`\n${'═'.repeat(52)}`);
   console.log(`  @${username}  [Instagram]`);
   console.log(`${'═'.repeat(52)}`);
 
   const postMap = new Map();
-  const state   = { rateLimitUntil: 0, dumpedOnce: false };
+  const state   = {
+    rateLimitUntil: 0,
+    dumpedOnce:     false,
+    feedExhausted:  false,
+    expectedTotal:  null,
+    targetUsername: String(username).toLowerCase(),  // consumed by findPostsInObj
+    targetId:       null,
+    followers:      null,
+    profileName:    null,
+    verified:       false,
+    biography:      null,
+  };
   const filterFn = buildFilter(filterOpts);
   const page    = await setupDesktopPage(context);
 
@@ -410,46 +487,99 @@ export async function scrapeInstagramUser(username, context, opts = {}) {
     }
 
     // Extract initial batch from SSR-embedded script blocks
-    const ssrPosts = await extractSSRPosts(page);
+    const ssrPosts = await extractSSRPosts(page, state);
     for (const p of ssrPosts) {
       if (!postMap.has(p.id)) postMap.set(p.id, p);
     }
-    console.log(`Instagram: ${postMap.size} posts from SSR`);
+    const totalHint = state.expectedTotal ? ` (profile has ${state.expectedTotal} total)` : '';
+    console.log(`Instagram: ${postMap.size} posts from SSR${totalHint}`);
 
-    await scrollPage(page, postMap, state, { max, debug });
+    await scrollPage(page, postMap, state, { max, debug, onProgress: userProgress });
 
-    // Scrape the Reels tab for additional content
-    if (reels && postMap.size < max) {
+    // Reels feed has its own pagination — reset exhaustion flag before scraping it
+    if (reels && postMap.size < max && (!state.expectedTotal || postMap.size < state.expectedTotal)) {
+      state.feedExhausted = false;
       await page.goto(`https://www.instagram.com/${username}/reels/`, {
         waitUntil: 'domcontentloaded', timeout: 60_000,
       });
       await page.waitForTimeout(3000);
 
-      const reelSSR = await extractSSRPosts(page);
+      const reelSSR = await extractSSRPosts(page, state);
       for (const p of reelSSR) {
         if (!postMap.has(p.id)) postMap.set(p.id, p);
       }
 
-      await scrollPage(page, postMap, state, { max, debug });
+      await scrollPage(page, postMap, state, { max, debug, onProgress: userProgress });
     }
   } finally {
     await page.close();
   }
 
+  // Filter to the target user: SSR + XHR responses can include
+  // recommendation/explore posts from unrelated accounts. Two signals:
+  //   1) state.targetId — captured from SSR's user object (authoritative).
+  //   2) majority-vote on author.id among posts where author.username matches —
+  //      backup when SSR didn't expose the user id for some reason.
+  const targetUsername = String(username).toLowerCase();
+  let targetId = state.targetId ?? null;
+  if (!targetId) {
+    const counts = new Map();
+    for (const p of postMap.values()) {
+      if (p.author?.username?.toLowerCase() === targetUsername) {
+        const id = p.author?.id;
+        if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+      }
+    }
+    targetId = counts.size
+      ? [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0]
+      : null;
+  }
+
+  const ownedByTarget = (p) =>
+    p.author?.username?.toLowerCase() === targetUsername ||
+    (targetId && String(p.author?.id) === String(targetId));
+
   const posts = Array.from(postMap.values())
+    .filter(ownedByTarget)
     .filter(filterFn)
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .slice(0, max);
 
-  // Build a minimal profile object from the first post's author
+  // If SSR/XHR never surfaced a real follower count, fetch web_profile_info
+  // explicitly. This endpoint is hit by Instagram's own desktop UI and returns
+  // edge_followed_by.count even when the feed/clips API responses omit it.
+  if (!state.followers) {
+    try {
+      const info = await page.evaluate(async (uname) => {
+        const r = await fetch(
+          `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(uname)}`,
+          { headers: { 'x-ig-app-id': '936619743392459' }, credentials: 'include' },
+        );
+        if (!r.ok) return null;
+        return r.json();
+      }, username);
+      const u = info?.data?.user;
+      if (u) {
+        if (typeof u.edge_followed_by?.count === 'number' && u.edge_followed_by.count > 0) {
+          state.followers = u.edge_followed_by.count;
+        }
+        if (!state.profileName && u.full_name) state.profileName = u.full_name;
+        if (typeof u.is_verified === 'boolean')  state.verified    = u.is_verified || state.verified;
+        if (!state.targetId && (u.id || u.pk)) state.targetId    = String(u.id ?? u.pk);
+        if (!state.biography && u.biography)   state.biography   = u.biography;
+      }
+    } catch { /* best-effort */ }
+  }
+
   const first   = posts[0];
-  const profile = first
+  const profile = (first || state.followers || state.profileName)
     ? {
-        username:  first.author.username,
-        name:      first.author.name,
-        id:        first.author.id,
-        followers: first.author.followers,
-        verified:  first.author.verified,
+        username,
+        name:      state.profileName     ?? first?.author?.name      ?? '',
+        id:        state.targetId        ?? first?.author?.id        ?? '',
+        followers: state.followers       ?? first?.author?.followers ?? 0,
+        verified:  state.verified        ?? first?.author?.verified  ?? false,
+        biography: state.biography       ?? '',
         platform:  'instagram',
       }
     : null;

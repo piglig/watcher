@@ -1,11 +1,10 @@
 export {
-  STATES, STATE_LABELS,
+  WORKFLOW_STATE, STATES, STATE_LABELS,
   createWorkflow, listWorkflows, getWorkflow,
   updateWorkflow, updateStage, deleteWorkflow,
 } from './store.js';
 
 export {
-  startWorkflow,
   startWorkflows,
   tryAdvanceOsint,
   runScrapeAndSubmitClassify,

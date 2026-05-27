@@ -2,17 +2,20 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import SelectInput from 'ink-select-input';
 import KeyBar from '../components/KeyBar.js';
+import { Indicator, Item } from '../components/SelectChrome.js';
 import { SYM } from '../theme.js';
-import { readdirSync, readFileSync, existsSync } from 'fs';
-import { resolve, join, relative, basename } from 'path';
+import { readFileSync } from 'fs';
+import { basename } from 'path';
+import { walkFiles, DEFAULT_IGNORE } from '../../shared/fs-walk.js';
 import { getConfig } from '../../shared/config-store.js';
+
+const PREVIEW_IGNORE = new Set([...DEFAULT_IGNORE, 'classified']);
 
 // ── Data extraction ────────────────────────────────────────────────────────────
 
 function extractRecords(data) {
   if (Array.isArray(data)) return data;
-  const arr = data.tweets ?? data.videos ?? data.posts ?? data.items ?? data.results ?? data.artworks;
-  if (Array.isArray(arr)) return arr;
+  if (Array.isArray(data?.posts)) return data.posts;
   return [data];
 }
 
@@ -139,36 +142,10 @@ function truncateByWidth(str, maxCols) {
 
 // ── File list helpers ──────────────────────────────────────────────────────────
 
-function Indicator({ isSelected }) {
-  return (
-    <Box marginRight={1}>
-      {isSelected ? <Text color="cyan" bold>{SYM.cursor}</Text> : <Text> </Text>}
-    </Box>
-  );
-}
-function Item({ label, isSelected }) {
-  return <Text color={isSelected ? 'white' : 'gray'}>{label}</Text>;
-}
-
 function scanJsonFilesRecursive(dir) {
-  const results = [];
-  try {
-    const abs = resolve(dir);
-    if (!existsSync(abs)) return [];
-    function walk(d) {
-      let entries;
-      try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
-      for (const e of entries) {
-        if (e.isDirectory()) {
-          if (e.name !== 'classified') walk(join(d, e.name));
-        } else if (e.name.endsWith('.json')) {
-          results.push({ label: relative(abs, join(d, e.name)), value: join(d, e.name) });
-        }
-      }
-    }
-    walk(abs);
-  } catch {}
-  return results.sort((a, b) => b.label.localeCompare(a.label));
+  return walkFiles(dir, { match: '.json', ignore: PREVIEW_IGNORE })
+    .map(f => ({ label: f.rel, value: f.path }))
+    .sort((a, b) => b.label.localeCompare(a.label));
 }
 
 // ── Record detail view ─────────────────────────────────────────────────────────

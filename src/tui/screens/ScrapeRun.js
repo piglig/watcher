@@ -1,52 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
+import LogPanel from '../components/LogPanel.js';
+import StatusPanel from '../components/StatusPanel.js';
 import { SYM } from '../theme.js';
+import { useElapsed } from '../hooks/useElapsed.js';
+import { useConsoleCapture } from '../hooks/useConsoleCapture.js';
 import { runScrape } from '../runner.js';
 import { getConfig } from '../../shared/config-store.js';
+import { defaultModelForProvider, inferProvider } from '../../classifier/classifier.js';
 import { confirmLogin, isLoginPending } from '../../shared/login-signal.js';
+import { enrichFromScrapedProfiles, discoveriesToPlatformConfigs } from '../../osint/index.js';
+import { kolDir } from '../../shared/paths.js';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function fmtElapsed(secs) {
-  const m = Math.floor(secs / 60).toString().padStart(2, '0');
-  const s = (secs % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
-}
-
-function logColor(line) {
-  if (line.startsWith('[ERR]'))  return 'red';
-  if (line.startsWith('[WARN]')) return 'yellow';
-  return 'gray';
-}
-
-function LogLine({ text }) {
-  const color  = logColor(text);
-  const prefix = text.startsWith('[ERR]')  ? `${SYM.cross} `
-               : text.startsWith('[WARN]') ? `${SYM.warn}  `
-               : '  ';
-  const body = text.replace(/^\[(ERR|WARN)\] /, '');
-  return (
-    <Box gap={0}>
-      <Text color={color}>{prefix}</Text>
-      <Text color={color} dimColor wrap="truncate">{body}</Text>
-    </Box>
-  );
-}
-
-function useElapsed(active) {
-  const [secs, setSecs] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setSecs(s => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [active]);
-  return secs;
-}
-
-// ── Main component ────────────────────────────────────────────────────────────
-
-const RECENT_LINES = 5;
+const RECENT_LINES = 14;
 
 export default function ScrapeRun({ config, onNav }) {
   const [recentLogs, setRecentLogs]   = useState([]);
@@ -55,9 +22,13 @@ export default function ScrapeRun({ config, onNav }) {
   const [errorMsg, setError]          = useState('');
   const [loginPending, setLoginPending] = useState(false);
 
-  const rawRef    = useRef([]);
-  const committed = useRef(0);
+  const launched  = useRef(false);
   const elapsed   = useElapsed(status === 'running');
+
+  useConsoleCapture((lines) => {
+    setRecentLogs(prev => [...prev, ...lines].slice(-RECENT_LINES));
+    setLoginPending(isLoginPending());
+  }, { enabled: status === 'running' });
 
   useInput((input, key) => {
     if (key.escape && status !== 'running') { onNav('menu'); return; }
@@ -71,10 +42,12 @@ export default function ScrapeRun({ config, onNav }) {
       const outDir = Array.isArray(config)
         ? (config[0]?.outDir ?? './out/')
         : (config?.outDir    ?? './out/');
+      const provider = inferProvider(saved.model, saved.aiProvider);
       onNav('classify-run', {
         classifyConfig: {
           inputFiles: result.savedFiles.map(f => f.file),
-          model:      saved.model || 'gpt-4.1-mini',
+          aiProvider: provider,
+          model:      saved.model || defaultModelForProvider(provider),
           outDir,
           wait:       false,
         },
@@ -88,105 +61,110 @@ export default function ScrapeRun({ config, onNav }) {
   });
 
   useEffect(() => {
+    if (launched.current) return;
+    launched.current = true;
+
     let cancelled = false;
-
-    const orig = {
-      log:   console.log.bind(console),
-      error: console.error.bind(console),
-      warn:  console.warn.bind(console),
+    const onLog = (line) => {
+      const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      setRecentLogs(prev => [...prev, `[${ts}] ${line}`].slice(-RECENT_LINES));
     };
 
-    const push = (...args) => {
-      const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-      rawRef.current.push(line);
-    };
+    runScrape(config, onLog)
+      .then(async (res) => {
+        if (cancelled) return;
+        // Post-scrape bio enrichment + feedback scrape. Each scraped KOL's
+        // profile snapshots are now on disk — mine their bios for outbound
+        // platform URLs, merge new candidates into identity.json, and fan
+        // out a second runScrape for the discoveries so they're included
+        // in classify input alongside the original targets. One round only.
+        try {
+          const outDir = Array.isArray(config) ? (config[0]?.outDir ?? './out/') : (config?.outDir ?? './out/');
+          const cfgs   = Array.isArray(config) ? config : [config];
+          // Base scrape options carry the same params across rounds (max,
+          // since, until, auth keys, etc.) so the second scrape behaves
+          // identically to the first.
+          const baseConfig = cfgs[0]
+            ? Object.fromEntries(Object.entries(cfgs[0]).filter(([k]) =>
+                !['platform', 'targets', 'kolId'].includes(k)
+              ))
+            : { outDir };
 
-    console.log   = push;
-    console.error = (...a) => push('[ERR] '  + a.join(' '));
-    console.warn  = (...a) => push('[WARN] ' + a.join(' '));
+          const kolIds = [...new Set((res.savedFiles ?? []).map(f => f.kol_id).filter(Boolean))];
+          const feedbackConfigs = [];
+          for (const kolId of kolIds) {
+            const r = enrichFromScrapedProfiles(kolDir(outDir, kolId), { onLog });
+            if (r.added > 0) {
+              onLog(`[bio-enrich:post-scrape] ${kolId}: 扫描 ${r.scanned} 个 profile，新增 ${r.added} 个候选账号`);
+              feedbackConfigs.push(...discoveriesToPlatformConfigs(r.discovered, kolId, baseConfig));
+            }
+          }
+          if (feedbackConfigs.length) {
+            const platforms = feedbackConfigs.map(c => `${c.kolId}/${c.platform}`).join(', ');
+            onLog(`[bio-enrich:feedback] 启动二轮采集 · ${feedbackConfigs.length} 个目标（${platforms}）`);
+            const second = await runScrape(feedbackConfigs, onLog);
+            if (cancelled) return;
+            res.savedFiles.push(...second.savedFiles);
+            res.totalCount += second.totalCount;
+            onLog(`[bio-enrich:feedback] 二轮采集完成 · +${second.totalCount} 条 / ${second.savedFiles.length} 文件`);
+          }
+        } catch (e) {
+          onLog(`[bio-enrich:post-scrape] 异常：${e.message ?? e}`);
+        }
+        if (cancelled) return;
+        setResult(res);
+        setStatus('done');
+      })
+      .catch(err => { if (!cancelled) { setError(err.message ?? String(err)); setStatus('error'); } });
 
-    const flush = () => {
-      if (cancelled) return;
-      const all = rawRef.current;
-      if (all.length <= committed.current) return;
-      committed.current = all.length;
-      setRecentLogs(all.slice(-RECENT_LINES));
-      setLoginPending(isLoginPending());
-    };
-
-    const timer = setInterval(flush, 500);
-
-    runScrape(config)
-      .then(res  => { if (!cancelled) { setResult(res); setStatus('done'); } })
-      .catch(err => { if (!cancelled) { setError(err.message ?? String(err)); setStatus('error'); } })
-      .finally(() => {
-        clearInterval(timer);
-        flush();
-        Object.assign(console, orig);
-      });
-
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      Object.assign(console, orig);
-    };
+    return () => { cancelled = true; };
   }, []); // eslint-disable-line
 
   const statusColor = status === 'error' ? 'red' : status === 'done' ? 'green' : 'cyan';
+  const statusLabel = status === 'running' ? '采集运行中'
+                    : status === 'done'    ? '采集完成'
+                    :                        '出错';
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
 
-      {/* ── Status panel ── */}
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={statusColor}
-        paddingX={2}
-        paddingY={0}
+      <StatusPanel
+        color={statusColor}
+        label={statusLabel}
+        elapsed={status === 'running' ? elapsed : undefined}
+        error={status === 'error' ? errorMsg : undefined}
       >
-        <Box gap={2}>
-          <Text bold color={statusColor}>
-            {status === 'running' ? `${SYM.run} 采集运行中`
-             : status === 'done'  ? `${SYM.check} 采集完成`
-             :                      `${SYM.cross} 出错`}
-          </Text>
-          {status === 'running' && (
-            <Text color="gray" dimColor>{fmtElapsed(elapsed)}</Text>
-          )}
-        </Box>
-
         {status === 'running' && loginPending && (
           <Text bold color="yellow">  浏览器已打开，请完成登录后按 Enter 确认</Text>
         )}
-        {status === 'running' && (
-          recentLogs.length === 0
-            ? <Text color="gray" dimColor>  正在启动...</Text>
-            : recentLogs.map((line, i) => <LogLine key={i} text={line} />)
-        )}
+      </StatusPanel>
 
-        {status === 'error' && (
-          <Text color="red" wrap="truncate">  {errorMsg}</Text>
-        )}
-      </Box>
+      {/* ── Log panel — visible during run AND after completion so users can
+            inspect what the scraper actually did (esp. when totalCount=0). ── */}
+      <LogPanel logs={recentLogs} limit={RECENT_LINES} emptyText="正在启动…" />
 
       {/* ── Result panel ── */}
       {status === 'done' && result && (
         <Box
           flexDirection="column"
           borderStyle="round"
-          borderColor="green"
+          borderColor={result.totalCount > 0 ? 'green' : 'yellow'}
           paddingX={2}
           paddingY={0}
         >
-          <Text bold color="green">
-            {SYM.check} 共采集 {result.totalCount} 条内容
+          <Text bold color={result.totalCount > 0 ? 'green' : 'yellow'}>
+            {result.totalCount > 0 ? SYM.check : SYM.warn} 共采集 {result.totalCount} 条内容
           </Text>
+          {result.totalCount === 0 && (
+            <Text color="yellow" dimColor>
+              未采集到任何条目 — 请查看上方日志面板的具体原因（账号是否存在、API 是否报错、是否被限流等）
+            </Text>
+          )}
           {result.savedFiles.map(({ file, count, label }) => (
             <Box key={file} gap={2}>
               <Text color="gray" dimColor>{SYM.arrow}</Text>
               <Text color="cyan">{label}</Text>
-              <Text color="gray" dimColor>{count} 条</Text>
+              <Text color={count > 0 ? 'gray' : 'yellow'} dimColor={count > 0}>{count} 条</Text>
               <Text color="gray" dimColor wrap="truncate">{file}</Text>
             </Box>
           ))}

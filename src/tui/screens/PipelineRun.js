@@ -1,265 +1,175 @@
+/**
+ * PipelineRun — "采集并分析"
+ *
+ * Two phases:
+ *   1. SCRAPE — runs synchronously in-screen (scrape isn't async-backed by an
+ *      external job system, so it has to run while a screen is alive). Logs
+ *      go through a stamped buffer for nice rendering.
+ *   2. SESSION VIEW — after scrape, we create a classify session and switch
+ *      to displaying it. The session is advanced by the App-level daemon,
+ *      so navigating away no longer kills it.
+ *
+ * Resume: if `props.sessionId` is provided (e.g. from JobsList), we skip
+ * scrape and jump straight to session view.
+ */
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
 import StepBar from '../components/StepBar.js';
-import { SYM, RISK_COLORS, RISK_LABELS } from '../theme.js';
+import LogPanel from '../components/LogPanel.js';
+import StatusPanel from '../components/StatusPanel.js';
+import { SYM } from '../theme.js';
+import { useElapsed } from '../hooks/useElapsed.js';
+import { useConsoleCapture } from '../hooks/useConsoleCapture.js';
 import { runScrape } from '../runner.js';
-import { runClassify } from '../classify-runner.js';
 import { getConfig } from '../../shared/config-store.js';
 import { confirmLogin, isLoginPending } from '../../shared/login-signal.js';
+import { createSession, SESSION_STATE } from '../../shared/sessions-store.js';
+import { advanceSession } from '../../classifier/session.js';
+import { defaultModelForProvider, inferProvider } from '../../classifier/classifier.js';
+import { useSession } from '../hooks/useSession.js';
+import SessionView from '../components/SessionView.js';
+import { join, resolve } from 'path';
 
 const STAGE_ORDER = ['采集', 'AI 分析', '结论'];
+const LOG_LIMIT   = 14;
 
-const RECENT_LINES = 5;
-
-function stageFromStatus(status) {
-  switch (status) {
-    case 'scraping':    return 0;
-    case 'classifying': return 1;
-    case 'done':        return 2;
-    case 'error':       return 0;
-    default:            return 0;
-  }
-}
-
-function useElapsed(active) {
-  const [secs, setSecs] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setSecs(s => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [active]);
-  return secs;
-}
-
-function fmtElapsed(secs) {
-  const m = Math.floor(secs / 60).toString().padStart(2, '0');
-  const s = (secs % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
-}
-
-export default function PipelineRun({ config, onNav }) {
-  const [status, setStatus]           = useState('scraping');
-  const [logs, setLogs]               = useState([]);
-  const [countdown, setCountdown]     = useState(null);
-  const [loginPending, setLoginPending] = useState(false);
+export default function PipelineRun({ config, onNav, sessionId: initialSessionId }) {
+  const [phase, setPhase]               = useState(initialSessionId ? 'view' : 'scraping');
+  const [logs, setLogs]                 = useState([]);
   const [scrapeResult, setScrapeResult] = useState(null);
-  const [classifyResult, setClassifyResult] = useState(null);
-  const [errorMsg, setErrorMsg]     = useState('');
-  const [classifyBatchId, setClassifyBatchId] = useState(null);
-  const [inputFiles, setInputFiles] = useState([]);
+  const [sessionId, setSessionId]       = useState(initialSessionId ?? null);
+  const [errorMsg, setErrorMsg]         = useState('');
+  const [loginPending, setLoginPending] = useState(false);
 
-  const classifyBatchIdRef = useRef(null);
-  const inputFilesRef      = useRef([]);
-  const pollIntervalRef    = useRef(null);
-  const launched           = useRef(false);
-  const rawRef             = useRef([]);
-  const committed          = useRef(0);
+  const launched   = useRef(false);
+  const startedAt  = useRef(Date.now());
+  const elapsed    = useElapsed(phase === 'scraping');
 
-  const elapsed = useElapsed(status === 'scraping' || status === 'classifying');
+  const session = useSession(sessionId);
 
-  const log = (line) => setLogs(prev => [...prev.slice(-(RECENT_LINES - 1)), line]);
+  // Stamped logger for scrape phase
+  const stampedLog = (line) => {
+    const dt = Math.floor((Date.now() - startedAt.current) / 1000);
+    const mm = String(Math.floor(dt / 60)).padStart(2, '0');
+    const ss = String(dt % 60).padStart(2, '0');
+    setLogs(prev => [...prev.slice(-(LOG_LIMIT - 1)), `T+${mm}:${ss} ${line}`]);
+  };
 
-  const outDir = config?.[0]?.outDir ?? './out/';
-  const model  = getConfig().model || 'gpt-4.1-mini';
+  useConsoleCapture((lines) => {
+    for (const line of lines) stampedLog(line);
+    setLoginPending(isLoginPending());
+  }, { enabled: phase === 'scraping' });
+
+  const outDir  = config?.[0]?.outDir ?? './out/';
+  const saved   = getConfig();
+  const provider = inferProvider(saved.model, saved.aiProvider);
+  const model   = saved.model || defaultModelForProvider(provider);
 
   useInput((input, key) => {
     if (key.return && loginPending) { confirmLogin(); return; }
-    if (key.escape && status !== 'scraping') onNav('menu');
+    if (phase === 'view' && (input === 'j' || input === 'J')) { onNav('jobs'); return; }
+    if (key.escape && phase !== 'scraping') onNav('menu');
   });
 
-  const doClassify = async (files, batchId) => {
-    try {
-      log(batchId ? `检索分类批次 ${batchId}...` : `提交 AI 分类批次...`);
-      const res = await runClassify(
-        { inputFiles: files, batchId, model, outDir, wait: false },
-        log
-      );
-      if (res.status === 'completed') {
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-        }
-        setCountdown(null);
-        setClassifyResult(res);
-        setStatus('done');
-      } else {
-        classifyBatchIdRef.current = res.batchId;
-        setClassifyBatchId(res.batchId);
-        log(`批次已提交：${res.batchId}，等待完成...`);
-        if (!pollIntervalRef.current) {
-          let cd = 30;
-          setCountdown(cd);
-          pollIntervalRef.current = setInterval(() => {
-            cd -= 1;
-            if (cd <= 0) {
-              cd = 30;
-              setCountdown(30);
-              doClassify(inputFilesRef.current, classifyBatchIdRef.current);
-            } else {
-              setCountdown(cd);
-            }
-          }, 1000);
-        }
-      }
-    } catch (e) {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
-      setCountdown(null);
-      setErrorMsg(e?.message ?? String(e));
-      setStatus('error');
-    }
-  };
-
+  // SCRAPE phase — runs once
   useEffect(() => {
-    if (launched.current) return;
+    if (phase !== 'scraping' || launched.current) return;
     launched.current = true;
 
-    const orig = {
-      log:   console.log.bind(console),
-      error: console.error.bind(console),
-      warn:  console.warn.bind(console),
-    };
-
-    const push = (...args) => {
-      const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-      rawRef.current.push(line);
-    };
-
-    console.log   = push;
-    console.error = (...a) => push('[ERR] ' + a.join(' '));
-    console.warn  = (...a) => push('[WARN] ' + a.join(' '));
-
-    const flush = () => {
-      const all = rawRef.current;
-      if (all.length <= committed.current) return;
-      committed.current = all.length;
-      setLogs(all.slice(-RECENT_LINES));
-      setLoginPending(isLoginPending());
-    };
-
-    const timer = setInterval(flush, 500);
-
-    runScrape(config)
+    runScrape(config, stampedLog)
       .then(async res => {
-        clearInterval(timer);
-        flush();
-        Object.assign(console, orig);
         setScrapeResult(res);
-        const files = res.savedFiles.map(f => f.file);
-        inputFilesRef.current = files;
-        setInputFiles(files);
-        setStatus('classifying');
-        await doClassify(files, null);
+
+        if (!res.totalCount) {
+          setErrorMsg('采集到 0 条内容，无可分析数据');
+          setPhase('error');
+          return;
+        }
+
+        // Create classify session — daemon will take it from here. Each saved
+        // file already carries its owning kolId (the runner stamps it), so
+        // the session gets per-file kol_id annotations and per-kol grouping
+        // downstream becomes a one-line map lookup instead of path scanning.
+        const inputFiles = res.savedFiles.map(f => ({ file: f.file, kol_id: f.kol_id }));
+        const kolIds = [...new Set(inputFiles.map(f => f.kol_id))];
+        const s = createSession({
+          source:      'pipeline',
+          kol_ids:     kolIds,
+          out_root:    resolve(outDir),
+          input_files: inputFiles,
+          provider,
+          model,
+        });
+        stampedLog(`Classify session 创建：${s.id} · ${inputFiles.length} 个文件`);
+        stampedLog('daemon 将自动推进，可按 ESC 安全离开。');
+        setSessionId(s.id);
+        setPhase('view');
+        // Kick once for UX immediacy
+        advanceSession(s).catch(() => {});
       })
       .catch(err => {
-        clearInterval(timer);
-        flush();
-        Object.assign(console, orig);
         setErrorMsg(err?.message ?? String(err));
-        setStatus('error');
+        setPhase('error');
       });
+  }, [phase]);
 
-    return () => {
-      clearInterval(timer);
-      Object.assign(console, orig);
-    };
-  }, []);
+  const stage = session?.state === SESSION_STATE.COMPLETED ? 2
+              : phase === 'scraping'          ? 0
+              : 1;
 
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
-    };
-  }, []);
+  // ── SCRAPE / ERROR phase render ────────────────────────────────────────────
+  if (phase === 'scraping' || phase === 'error') {
+    const color = phase === 'error' ? 'red' : 'cyan';
+    const label = phase === 'error' ? '出错' : '采集运行中';
 
-  const stage = stageFromStatus(status);
-  const statusColor =
-    status === 'error' ? 'red' :
-    status === 'done'  ? 'green' : 'cyan';
+    return (
+      <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
+        <Text bold color="cyan">采集并分析</Text>
+        <StepBar steps={STAGE_ORDER} current={stage} />
 
-  const statusLabel =
-    status === 'scraping'    ? `${SYM.run} 采集运行中` :
-    status === 'classifying' ? `${SYM.run} AI 分析中` :
-    status === 'done'        ? `${SYM.check} 分析完成` :
-                               `${SYM.cross} 出错`;
+        <StatusPanel
+          color={color}
+          label={label}
+          elapsed={phase === 'scraping' ? elapsed : undefined}
+        >
+          {loginPending && phase === 'scraping' && (
+            <Text bold color="yellow">{SYM.warn} 浏览器已打开，请完成登录后按 Enter 确认</Text>
+          )}
+        </StatusPanel>
 
+        <LogPanel logs={logs} limit={LOG_LIMIT} />
+
+        {errorMsg && (
+          <Box borderStyle="round" borderColor="red" paddingX={2}>
+            <Text color="red">{SYM.cross} {errorMsg}</Text>
+          </Box>
+        )}
+
+        <KeyBar hints={[
+          ...(loginPending ? [{ key: 'Enter', label: '确认登录' }] : []),
+          ...(phase !== 'scraping' ? [{ key: 'ESC', label: '返回菜单' }] : []),
+        ]} />
+      </Box>
+    );
+  }
+
+  // ── SESSION VIEW phase ─────────────────────────────────────────────────────
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
       <Text bold color="cyan">采集并分析</Text>
       <StepBar steps={STAGE_ORDER} current={stage} />
 
-      <Box flexDirection="column" borderStyle="round" borderColor={statusColor} paddingX={2} paddingY={0} gap={0}>
-        <Box gap={2}>
-          <Text bold color={statusColor}>{statusLabel}</Text>
-          {(status === 'scraping' || status === 'classifying') && (
-            <Text color="gray" dimColor>{fmtElapsed(elapsed)}</Text>
-          )}
-        </Box>
-        {countdown !== null && status === 'classifying' && (
-          <Text color="gray" dimColor>  下次自动检索：{countdown}s  [r 立即检索]</Text>
-        )}
-        {loginPending && status === 'scraping' && (
-          <Text bold color="yellow">  浏览器已打开，请完成登录后按 Enter 确认</Text>
-        )}
-        {logs.length > 0 && status !== 'done' && (
-          logs.map((l, i) => (
-            <Text key={i} color="gray" dimColor wrap="truncate">  {l}</Text>
-          ))
-        )}
-      </Box>
-
-      {errorMsg && (
-        <Box borderStyle="round" borderColor="red" paddingX={2}>
-          <Text color="red">{SYM.cross} {errorMsg}</Text>
-        </Box>
-      )}
-
-      {status === 'done' && classifyResult && (
-        <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={2} paddingY={0} gap={0}>
-          <Text bold color="green">{SYM.check} 分析完成</Text>
-          {scrapeResult && (
-            <Text color="gray" dimColor>  总帖子数：{scrapeResult.totalCount} 条</Text>
-          )}
-          {classifyResult.userRisk && classifyResult.userRisk.length > 0 && (
-            <Box flexDirection="column" marginTop={0}>
-              <Text color="gray" dimColor>  账号风险排行：</Text>
-              {classifyResult.userRisk.slice(0, 5).map((u, i) => (
-                <Box key={i} gap={2} paddingLeft={4}>
-                  <Text color="white">@{u.username ?? '?'}</Text>
-                  <Text color={RISK_COLORS[u.risk_level] ?? 'gray'}>
-                    {RISK_LABELS[u.risk_level] ?? u.risk_level ?? '—'}
-                  </Text>
-                  <Text color="gray" dimColor>{u.risk_score ?? '—'} 分</Text>
-                </Box>
-              ))}
-            </Box>
-          )}
-          {classifyResult.userRisk && (
-            <Text color="gray" dimColor>
-              {'  '}标记内容：{classifyResult.userRisk.reduce((s, u) => s + (u.flagged_post_count ?? 0), 0)} 条
-            </Text>
-          )}
-          {classifyResult.savedFiles && classifyResult.savedFiles.length > 0 && (
-            <Box flexDirection="column" marginTop={0}>
-              <Text color="gray" dimColor>  输出文件：</Text>
-              {classifyResult.savedFiles.map(({ file, label }) => (
-                <Box key={file} gap={2} paddingLeft={4}>
-                  <Text color="gray" dimColor>{SYM.arrow}</Text>
-                  <Text color="cyan" wrap="truncate">{label}  {file}</Text>
-                </Box>
-              ))}
-            </Box>
-          )}
-        </Box>
-      )}
+      <SessionView
+        session={session}
+        scrapeResult={scrapeResult}
+        emptyText="正在创建 session…"
+      />
 
       <KeyBar hints={[
-        ...(loginPending ? [{ key: 'Enter', label: '确认登录' }] : []),
-        ...(status !== 'scraping' ? [{ key: 'ESC', label: '返回菜单' }] : []),
+        { key: 'j', label: '前往分类任务列表' },
+        { key: 'ESC', label: '返回菜单' },
       ]} />
     </Box>
   );

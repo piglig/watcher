@@ -47,4 +47,8 @@ export const PLATFORM_LABELS = {
   pixiv:   'Pixiv',
   naver:   'Naver Café',
   youtube: 'YouTube',
+  instagram: 'Instagram',
+  twitch:  'Twitch',
+  bluesky: 'Bluesky',
+  facebook:'Facebook',
 };

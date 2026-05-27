@@ -7,6 +7,8 @@
  * Rate limit: ~2000 req/window tracked via X-RateLimit-Remaining header
  */
 
+import pRetry, { AbortError } from 'p-retry';
+
 const BASE     = 'https://arctic-shift.photon-reddit.com/api';
 const UA       = 'nodejs:twitter-scraper:1.0';
 const DELAY_MS = 400;  // ~150 req/min — well under observed limit
@@ -15,41 +17,36 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
 
-async function arcticFetch(path, params = {}, retries = 3) {
+async function arcticFetch(path, params = {}) {
   const url = new URL(BASE + path);
   for (const [k, v] of Object.entries(params)) {
     if (v != null) url.searchParams.set(k, String(v));
   }
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  return pRetry(async () => {
     const res = await fetch(url.toString(), { headers: { 'User-Agent': UA } });
 
     // Proactive slow-down when approaching rate limit
     const remaining = parseInt(res.headers.get('x-ratelimit-remaining') ?? '999', 10);
     if (remaining < 20) {
       const reset = parseInt(res.headers.get('x-ratelimit-reset') ?? '10', 10);
-      console.warn(`[WARN] Rate limit — ${remaining} requests left, waiting ${reset}s...`);
+      console.warn(`[arctic] rate limit — ${remaining} left, waiting ${reset}s...`);
       await sleep(reset * 1000);
     }
 
     if (res.status === 429) {
       const wait = parseInt(res.headers.get('retry-after') ?? '60', 10) * 1000;
-      console.warn(`[WARN] Rate limit 429 — waiting ${Math.ceil(wait / 1000)}s...`);
+      console.warn(`[arctic] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
       await sleep(wait);
-      continue;
+      throw new Error('arctic: 429 rate-limited');                       // → retry
     }
 
-    if (!res.ok) {
-      if (attempt < retries) { await sleep(1500 * (attempt + 1)); continue; }
-      throw new Error(`Arctic Shift ${res.status} ${res.statusText}: ${path}`);
-    }
+    if (!res.ok) throw new Error(`Arctic Shift ${res.status} ${res.statusText}: ${path}`);
 
     const json = await res.json();
-    if (json.error) throw new Error(`Arctic Shift API: ${json.error}`);
+    if (json.error) throw new AbortError(`Arctic Shift API: ${json.error}`); // logical fail
     return json.data ?? [];
-  }
-
-  throw new Error(`Arctic Shift: max retries exceeded for ${path}`);
+  }, { retries: 5, factor: 2, minTimeout: 1500, maxTimeout: 60_000 });
 }
 
 // ── Parsers — same normalized shape as src/reddit.js ─────────────────────────

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import SelectInput from 'ink-select-input';
 import KeyBar from '../components/KeyBar.js';
+import { Indicator, Item } from '../components/SelectChrome.js';
 import { SYM } from '../theme.js';
 import { listWorkflows, deleteWorkflow, STATE_LABELS } from '../../workflow/index.js';
 
@@ -22,17 +23,6 @@ const STATE_COLOR = {
   report_done:      'green',
   error:            'red',
 };
-
-function Indicator({ isSelected }) {
-  return (
-    <Box marginRight={1}>
-      {isSelected ? <Text color="cyan" bold>{SYM.cursor}</Text> : <Text> </Text>}
-    </Box>
-  );
-}
-function Item({ label, isSelected }) {
-  return <Text color={isSelected ? 'white' : 'gray'}>{label}</Text>;
-}
 
 export default function WorkflowList({ onNav }) {
   const [version, setVersion] = useState(0);

@@ -9,22 +9,38 @@
  * Docs: https://docs.x.ai/developers/advanced-api-usage/batch-api
  */
 
+import pRetry, { AbortError } from 'p-retry';
+
 const BASE_URL = 'https://api.x.ai/v1';
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 async function xaiFetch(apiKey, path, init = {}) {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      ...(init.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
+  return pRetry(async () => {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        ...(init.headers ?? {}),
+      },
+    });
+
+    if (res.status === 429) {
+      const wait = parseInt(res.headers.get('retry-after') ?? '30', 10) * 1000;
+      console.warn(`[xai] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
+      await sleep(wait);
+      throw new Error('xai: 429 rate-limited');                          // → retry
+    }
+
+    if (res.ok) return res.json();
+
     const body = await res.text().catch(() => '');
-    throw new Error(`xAI ${init.method ?? 'GET'} ${path} failed ${res.status}: ${body.slice(0, 500)}`);
-  }
-  return res.json();
+    const msg  = `xAI ${init.method ?? 'GET'} ${path} failed ${res.status}: ${body.slice(0, 500)}`;
+    // 4xx (other than 429) means malformed request — retrying won't help.
+    if (res.status >= 400 && res.status < 500) throw new AbortError(msg);
+    throw new Error(msg);                                                 // 5xx → retry
+  }, { retries: 4, factor: 2, minTimeout: 1500, maxTimeout: 30_000 });
 }
 
 /**

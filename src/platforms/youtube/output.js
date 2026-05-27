@@ -2,7 +2,9 @@
  * youtube-output.js — Stats, JSON and CSV for YouTube data
  */
 
+import Papa from 'papaparse';
 import { formatNumber } from '../../shared/format.js';
+import { normalizeToPosts } from '../../shared/post.js';
 
 export function printYouTubeStats(profile, videos) {
   console.log('Aggregate stats');
@@ -41,7 +43,7 @@ export function printYouTubeStats(profile, videos) {
 }
 
 export function toYouTubeJSON(profile, videos) {
-  return JSON.stringify({ profile, videos }, null, 2);
+  return JSON.stringify({ profile, posts: normalizeToPosts(videos) }, null, 2);
 }
 
 const VIDEO_HEADERS = [
@@ -53,13 +55,7 @@ const VIDEO_HEADERS = [
 ];
 
 export function toYouTubeCSV(videos) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-
-  const rows = videos.map(v => [
+  const data = videos.map(v => [
     v.id,
     v.url,
     v.thumbnail,
@@ -75,7 +71,6 @@ export function toYouTubeCSV(videos) {
     v.metrics.comments,
     v.tags.join(' '),
     v.transcript,
-  ].map(esc).join(','));
-
-  return [VIDEO_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: VIDEO_HEADERS, data }, { newline: '\n' });
 }

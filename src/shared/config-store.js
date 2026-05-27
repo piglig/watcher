@@ -2,26 +2,11 @@
  * config-store.js — 持久化用户配置到 ~/.sns-audit/config.json
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import { createJsonStore } from './json-store.js';
 
-const CONFIG_DIR  = join(homedir(), '.sns-audit');
-const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
-
-function load() {
-  try {
-    if (!existsSync(CONFIG_FILE)) return {};
-    return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
-  } catch { return {}; }
-}
-
-function save(cfg) {
-  try {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
-  } catch {}
-}
+const store = createJsonStore('config.json', { defaultValue: {} });
+const load = () => store.load();
+const save = (cfg) => store.persist(cfg);
 
 export function getConfig() { return load(); }
 
@@ -35,6 +20,8 @@ export function setConfig(updates) {
 export function applyToEnv() {
   const cfg = load();
   if (cfg.openaiKey          && !process.env.OPENAI_API_KEY)       process.env.OPENAI_API_KEY       = cfg.openaiKey;
+  if (cfg.geminiKey          && !process.env.GEMINI_API_KEY)       process.env.GEMINI_API_KEY       = cfg.geminiKey;
+  if (cfg.deepseekKey        && !process.env.DEEPSEEK_API_KEY)     process.env.DEEPSEEK_API_KEY     = cfg.deepseekKey;
   if (cfg.youtubeKey         && !process.env.YOUTUBE_API_KEY)      process.env.YOUTUBE_API_KEY      = cfg.youtubeKey;
   if (cfg.xaiKey             && !process.env.XAI_API_KEY)          process.env.XAI_API_KEY          = cfg.xaiKey;
   if (cfg.blueskyIdentifier  && !process.env.BLUESKY_IDENTIFIER)   process.env.BLUESKY_IDENTIFIER   = cfg.blueskyIdentifier;

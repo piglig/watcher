@@ -4,47 +4,43 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import Papa from 'papaparse';
+import { makeSlugger as makeSluggerBase } from '../shared/paths.js';
 
 // ── CSV parsing ───────────────────────────────────────────────────────────────
 
-function parseCSVLine(line) {
-  const cells = [];
-  let cur = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
-      else if (ch === '"') { inQuotes = false; }
-      else { cur += ch; }
-    } else {
-      if (ch === ',') { cells.push(cur); cur = ''; }
-      else if (ch === '"') { inQuotes = true; }
-      else { cur += ch; }
-    }
-  }
-  cells.push(cur);
-  return cells.map(s => s.trim());
-}
-
+/**
+ * Parse a CSV/TSV file with `name, seedUrl` columns.
+ *
+ * Delimiter is auto-detected (CSV / TSV / `;` / `|`), header row dropped when
+ * the first cells look like column names, and a row is kept only when its
+ * second cell looks URL-ish — that filter drops Excel-style "row count"
+ * preambles like `64\n` that some users prepend.
+ */
 export function parseCSV(path) {
   let raw = readFileSync(path, 'utf-8');
   if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);   // strip BOM
-  const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
-  if (!lines.length) return [];
 
-  const firstCells = parseCSVLine(lines[0]).map(s => s.toLowerCase());
-  const isHeader =
-    firstCells.includes('name') || firstCells.some(c => c.includes('seed') || c.includes('url'));
-  const rows = isHeader ? lines.slice(1) : lines;
+  const { data } = Papa.parse(raw, {
+    skipEmptyLines: 'greedy',
+    delimitersToGuess: [',', '\t', ';', '|'],
+  });
+
+  const isHeader = (cells) => {
+    const lower = cells.map(c => String(c ?? '').trim().toLowerCase());
+    return lower.includes('name')
+        || lower.some(c => c.includes('seed') || c.includes('url'));
+  };
+  const rows = data.length && isHeader(data[0]) ? data.slice(1) : data;
+
+  const looksLikeUrl = (s) => /^(https?:\/\/|www\.)/i.test(s);
 
   const out = [];
-  for (const line of rows) {
-    const cells = parseCSVLine(line);
-    if (cells.length < 2) continue;
-    const name = cells[0];
-    const seedUrl = cells[1];
-    if (!name || !seedUrl) continue;
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 2) continue;
+    const name    = String(row[0] ?? '').trim();
+    const seedUrl = String(row[1] ?? '').trim();
+    if (!name || !looksLikeUrl(seedUrl)) continue;
     out.push({ name, seedUrl });
   }
   return out;
@@ -52,19 +48,8 @@ export function parseCSV(path) {
 
 // ── Slugging with collision handling ──────────────────────────────────────────
 
-export function makeSlugger() {
-  const seen = new Map();
-  return function slug(name) {
-    let base = String(name).toLowerCase()
-      .replace(/[^\p{Letter}\p{Number}]+/gu, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60);
-    if (!base) base = 'kol';
-    const n = (seen.get(base) ?? 0) + 1;
-    seen.set(base, n);
-    return n === 1 ? base : `${base}-${n}`;
-  };
-}
+/** OSINT result slugger: drops `_`, caps at 60 chars, falls back to `kol`. */
+export const makeSlugger = () => makeSluggerBase({ fallback: 'kol' });
 
 // ── Result content extraction ─────────────────────────────────────────────────
 

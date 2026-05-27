@@ -8,29 +8,61 @@ import { buildPrompt } from './prompt.js';
 import { makeSlugger, writeResults } from './output.js';
 import { createBatch, addRequests, getBatch, getAllResults } from './xai-client.js';
 import { saveBatch, updateBatch } from '../shared/batch-store.js';
+import { extractBioLinks, renderBioExtract } from './bio-extractor.js';
 
 export const DEFAULT_MODEL = 'grok-4.3';
 
+// Cap concurrent pre-extract fetches so a 100-KOL batch doesn't open 100 sockets.
+const PREEXTRACT_CONCURRENCY = 6;
+
+async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 /**
  * @param {{name:string, seedUrl:string}[]} targets
- * @returns {{ batchRequests:object[], targetsMap:Record<string,{name,seed_url}> }}
+ * @returns {Promise<{ batchRequests:object[], targetsMap:Record<string,{name,seed_url}> }>}
  */
-export function buildBatchRequests(targets, model = DEFAULT_MODEL) {
+export async function buildBatchRequests(targets, model = DEFAULT_MODEL) {
   const slug = makeSlugger();
   const targetsMap    = {};
   const batchRequests = [];
   const today         = new Date().toISOString().slice(0, 10);
 
-  for (const { name, seedUrl } of targets) {
-    if (!name || !seedUrl) continue;
+  const valid = targets.filter(t => t?.name && t?.seedUrl);
+  if (!valid.length) return { batchRequests, targetsMap };
+
+  console.log(`  Pre-extracting bio links from ${valid.length} seed URL(s)...`);
+  const extracts = await mapWithConcurrency(valid, PREEXTRACT_CONCURRENCY, async ({ seedUrl }) => {
+    try { return await extractBioLinks(seedUrl); }
+    catch (e) {
+      console.warn(`[osint] Pre-extract failed for ${seedUrl}: ${e.message ?? e}`);
+      return null;
+    }
+  });
+  const hitCount = extracts.filter(Boolean).length;
+  console.log(`  Pre-extract: ${hitCount}/${valid.length} seeds yielded structured bio data`);
+
+  valid.forEach(({ name, seedUrl }, idx) => {
     const id = slug(name);
     targetsMap[id] = { name, seed_url: seedUrl };
+    const bioBlock = renderBioExtract(extracts[idx]);
     batchRequests.push({
       batch_request_id: id,
       batch_request: {
         responses: {
           model,
-          input: [{ role: 'user', content: buildPrompt(name, seedUrl, today) }],
+          input: [{ role: 'user', content: buildPrompt(name, seedUrl, today, bioBlock) }],
           tools: [{ type: 'web_search' }, { type: 'x_search' }],
           reasoning_effort: 'medium',
           temperature: 0.15,
@@ -38,7 +70,7 @@ export function buildBatchRequests(targets, model = DEFAULT_MODEL) {
         },
       },
     });
-  }
+  });
   return { batchRequests, targetsMap };
 }
 
@@ -49,43 +81,45 @@ export async function submitBatch(targets, opts = {}) {
   const {
     apiKey = process.env.XAI_API_KEY,
     model  = DEFAULT_MODEL,
-    outDir,
+    outDir,        // fixed dir (standalone OSINT)
+    outDirFor,     // (batchId) => path (workflows want batchId-named dir)
+    subjectOutDir, // user-facing root for promote-to-subject (persisted on the record)
   } = opts;
 
   if (!apiKey) throw new Error('XAI_API_KEY required. Set env var or fill it in Settings.');
-  if (!outDir) throw new Error('outDir required for OSINT batch');
+  if (!outDir && !outDirFor) throw new Error('outDir or outDirFor required for OSINT batch');
   if (!targets?.length) throw new Error('No targets provided');
 
-  mkdirSync(outDir, { recursive: true });
-
-  const { batchRequests, targetsMap } = buildBatchRequests(targets, model);
+  const { batchRequests, targetsMap } = await buildBatchRequests(targets, model);
   if (!batchRequests.length) throw new Error('All targets were invalid (missing name or seedUrl)');
 
+  // Create batch first — gives us batchId before we touch disk.
+  const created = await createBatch({ apiKey, name: `osint-${Date.now()}` });
+  const batchId = created.id ?? created.batch_id;
+  if (!batchId) throw new Error(`Unexpected xAI create response: ${JSON.stringify(created).slice(0, 300)}`);
+
+  const resolvedDir = outDir ?? outDirFor(batchId);
+  mkdirSync(resolvedDir, { recursive: true });
+
   writeFileSync(
-    join(outDir, '_targets.json'),
+    join(resolvedDir, '_targets.json'),
     JSON.stringify(targetsMap, null, 2),
     'utf-8',
   );
 
-  const created = await createBatch({
-    apiKey,
-    name: `osint-${Date.now()}`,
-  });
-  const batchId = created.id ?? created.batch_id;
-  if (!batchId) throw new Error(`Unexpected xAI create response: ${JSON.stringify(created).slice(0, 300)}`);
-
   await addRequests({ apiKey, batchId, batchRequests });
 
   saveBatch({
-    id:           batchId,
-    kind:         'osint',
+    id:              batchId,
+    kind:            'osint',
     model,
-    post_count:   batchRequests.length,
-    target_count: batchRequests.length,
-    out_dir:      outDir,
+    post_count:      batchRequests.length,
+    target_count:    batchRequests.length,
+    out_dir:         resolvedDir,     // staging dir holding raw results
+    subject_out_dir: subjectOutDir,   // user-facing root (may be undefined for workflow flow)
   });
 
-  return { batchId, count: batchRequests.length, targetsMap };
+  return { batchId, count: batchRequests.length, targetsMap, outDir: resolvedDir };
 }
 
 function summarizeStatus(batch) {
@@ -139,6 +173,8 @@ function readTargetsMap(outDir) {
   try {
     const p = join(outDir, '_targets.json');
     if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf-8'));
-  } catch {}
+  } catch (e) {
+    console.warn('[osint] _targets.json unreadable:', e.message ?? e);
+  }
   return {};
 }

@@ -67,6 +67,12 @@ export {
   toBlueskyJSON, toBlueskyCSV,
 } from './platforms/bluesky/index.js';
 
+// ── Facebook ──────────────────────────────────────────────────────────────────
+export {
+  scrapeFacebook, scrapeFacebookUser, parseFacebookUsername,
+  toFacebookJSON, toFacebookCSV,
+} from './platforms/facebook/index.js';
+
 // ── YouTube ───────────────────────────────────────────────────────────────────
 export {
   scrapeYouTube, scrapeYouTubeChannel, parseYouTubeChannel,
@@ -84,8 +90,9 @@ export {
 
 // ── Normalization ─────────────────────────────────────────────────────────────
 export {
-  normalizePost, normalizePosts, extractPosts, mergeAndNormalize,
+  normalizePosts, extractPosts, mergeAndNormalize,
 } from './shared/normalize.js';
+export { normalizeToPost, normalizeToPosts, isAuthoredText } from './shared/post.js';
 
 // ── Shared ────────────────────────────────────────────────────────────────────
 export { formatNumber } from './shared/format.js';

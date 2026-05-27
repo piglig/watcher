@@ -8,3 +8,10 @@ export {
 export { parseCSV, makeSlugger, writeResults, extractTextContent } from './output.js';
 export { createBatch, addRequests, getBatch, cancelBatch, listResults, getAllResults } from './xai-client.js';
 export { loadOsintDir, extractScrapeTargets, listOsintResultDirs } from './to-scrape.js';
+export { renderAccountsSummary } from './accounts-report.js';
+export {
+  enrichFromBios,
+  enrichFromScrapedProfiles,
+  identifyPlatformFromUrl,
+  discoveriesToPlatformConfigs,
+} from './bio-enrichment.js';

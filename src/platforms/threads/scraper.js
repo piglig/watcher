@@ -365,7 +365,27 @@ export async function scrapeThreadsUser(username, context, opts = {}) {
     await page.close();
   }
 
+  // Filter to the target user: Meta endpoints return recommended/related
+  // posts in the same payload. Without this guard, the resulting JSON
+  // would mix in suggested-user content as if it belonged to the target.
+  const targetUsername = String(username).toLowerCase();
+  const idCounts = new Map();
+  for (const t of threadMap.values()) {
+    if (t.author?.username?.toLowerCase() === targetUsername) {
+      const id = t.author?.id;
+      if (id) idCounts.set(id, (idCounts.get(id) ?? 0) + 1);
+    }
+  }
+  const targetId = idCounts.size
+    ? [...idCounts.entries()].sort((a, b) => b[1] - a[1])[0][0]
+    : null;
+
+  const ownedByTarget = (t) =>
+    t.author?.username?.toLowerCase() === targetUsername ||
+    (targetId && t.author?.id === targetId);
+
   return Array.from(threadMap.values())
+    .filter(ownedByTarget)
     .filter(filterFn)
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .slice(0, max);

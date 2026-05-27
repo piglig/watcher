@@ -1,23 +1,65 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
+import StatusPanel from '../components/StatusPanel.js';
 import { SYM } from '../theme.js';
-import { submitBatch, fetchBatchResults, loadOsintDir, extractScrapeTargets } from '../../osint/index.js';
+import { useElapsed } from '../hooks/useElapsed.js';
+import { submitBatch, fetchBatchResults, loadOsintDir, extractScrapeTargets, renderAccountsSummary, enrichFromBios } from '../../osint/index.js';
+import { BATCH_STATUS } from '../../shared/batch-store.js';
+import { osintStagingDir, kolDir, ensureDir, pathSafe } from '../../shared/paths.js';
+import { readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
 
-function fmtElapsed(secs) {
-  const m = Math.floor(secs / 60).toString().padStart(2, '0');
-  const s = (secs % 60).toString().padStart(2, '0');
-  return `${m}:${s}`;
-}
+/**
+ * After staging dir is filled with <slug>.json per KOL, write each one into
+ * <outDir>/<kol_id>/accounts/identity.json so the result is user-facing and
+ * discoverable by ScrapeSetup's OSINT picker.
+ *
+ * The OSINT slug (item.slug) IS the canonical kol_id — stamp it inside the
+ * identity document so downstream code never has to re-derive it from a
+ * directory name or fuzzy-match against display names.
+ *
+ * After stamping, runs bio-link enrichment per KOL: each verified profile's
+ * public bio is fetched and outbound platform URLs are mined for accounts
+ * Grok didn't surface. New finds land in suspected_accounts so they show up
+ * in the ScrapeSetup picker without a second OSINT round-trip.
+ *
+ * @returns {Promise<{kols:number, discovered:number}>}
+ */
+async function promoteIdentitiesToSubjects(stagingDir, outDir) {
+  const summaryPath = join(stagingDir, '_summary.json');
+  let summary;
+  try { summary = JSON.parse(readFileSync(summaryPath, 'utf-8')); }
+  catch { return { kols: 0, discovered: 0 }; }
 
-function useElapsed(active) {
-  const [secs, setSecs] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setSecs(s => s + 1), 1000);
-    return () => clearInterval(id);
-  }, [active]);
-  return secs;
+  let kols = 0, discovered = 0;
+  for (const item of summary.items ?? []) {
+    if (item.status !== 'ok' || !item.file) continue;
+    const kolId  = pathSafe(item.slug ?? item.name ?? 'unnamed');
+    const accDir = ensureDir(join(kolDir(outDir, kolId), 'accounts'));
+    try {
+      const identity = JSON.parse(readFileSync(item.file, 'utf-8'));
+      identity.kol_id = kolId;
+
+      // Bio-link enrichment per KOL — best-effort, never block on it.
+      try {
+        const found = await enrichFromBios(identity);
+        if (found.length) {
+          identity.suspected_accounts = [
+            ...(identity.suspected_accounts ?? []),
+            ...found,
+          ];
+          discovered += found.length;
+        }
+      } catch (e) {
+        console.warn(`[bio-enrich] ${kolId}: ${e.message ?? e}`);
+      }
+
+      writeFileSync(join(accDir, 'identity.json'), JSON.stringify(identity, null, 2));
+      kols++;
+    } catch { /* skip */ }
+  }
+  return { kols, discovered };
 }
 
 export default function OsintRun({ config, onNav }) {
@@ -36,6 +78,9 @@ export default function OsintRun({ config, onNav }) {
       const prefill = extractScrapeTargets(kols);
       onNav('scrape-setup', { scrapePrefill: { ...prefill, sourceDir: outDir } });
     }
+    if (status === 'submitted' && (input === 'j' || input === 'J')) {
+      onNav('jobs');
+    }
   });
 
   useEffect(() => {
@@ -50,19 +95,40 @@ export default function OsintRun({ config, onNav }) {
         const { batchId, targets = [], outDir, model } = config ?? {};
 
         if (batchId) {
-          // Retrieval mode (from JobsList)
-          const res = await fetchBatchResults(batchId, { apiKey, outDir, wait: false });
-          if (res.status === 'completed') {
-            setResult({ mode: 'completed', batchId, summary: res.summary, outDir });
+          // Retrieval mode — fetch from xAI, write staging, promote each KOL's
+          // slice to <outDir>/<kol-slug>/accounts/identity.json.
+          const res = await fetchBatchResults(batchId, {
+            apiKey,
+            outDir: osintStagingDir(batchId),
+            wait: false,
+          });
+          if (res.status === BATCH_STATUS.COMPLETED) {
+            const staging = osintStagingDir(batchId);
+            const promo = await promoteIdentitiesToSubjects(staging, outDir);
+            let summaryPath = null;
+            try { summaryPath = renderAccountsSummary(staging, outDir, { batchId }); }
+            catch (e) { console.warn('[osint] summary render failed:', e.message ?? e); }
+            setResult({
+              mode: 'completed',
+              batchId,
+              summary: res.summary,
+              outDir,
+              summaryPath,
+              enrichment: promo,
+            });
             setStatus('done');
           } else {
             setResult({ mode: 'pending', batchId, progress: res.progress, statusText: res.status, outDir });
             setStatus('submitted');
           }
         } else {
-          // Submit mode
+          // Submit mode — outDir is staging under ~/.sns-audit/internal/
           if (!targets.length) throw new Error('没有可提交的 KOL 目标');
-          const { batchId: newId, count } = await submitBatch(targets, { apiKey, model, outDir });
+          const { batchId: newId, count } = await submitBatch(targets, {
+            apiKey, model,
+            outDirFor:     (id) => osintStagingDir(id),
+            subjectOutDir: outDir,
+          });
           setResult({ mode: 'submitted', batchId: newId, count, outDir });
           setStatus('submitted');
         }
@@ -78,31 +144,20 @@ export default function OsintRun({ config, onNav }) {
     status === 'done'      ? 'green'  :
     status === 'submitted' ? 'yellow' : 'cyan';
 
+  const statusLabel =
+    status === 'running'    ? 'OSINT 处理中' :
+    status === 'done'       ? '任务完成' :
+    status === 'submitted'  ? '批次已提交 / 等待中' :
+                              '出错';
+
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={statusColor}
-        paddingX={2}
-        paddingY={0}
-      >
-        <Box gap={2}>
-          <Text bold color={statusColor}>
-            {status === 'running'    ? `${SYM.run} OSINT 处理中`
-             : status === 'done'     ? `${SYM.check} 任务完成`
-             : status === 'submitted'? `${SYM.dot} 批次已提交 / 等待中`
-             :                         `${SYM.cross} 出错`}
-          </Text>
-          {status === 'running' && (
-            <Text color="gray" dimColor>{fmtElapsed(elapsed)}</Text>
-          )}
-        </Box>
-
-        {status === 'error' && (
-          <Text color="red" wrap="truncate">  {errorMsg}</Text>
-        )}
-      </Box>
+      <StatusPanel
+        color={statusColor}
+        label={statusLabel}
+        elapsed={status === 'running' ? elapsed : undefined}
+        error={status === 'error' ? errorMsg : undefined}
+      />
 
       {/* Submitted (new) */}
       {status === 'submitted' && result?.mode === 'submitted' && (
@@ -130,6 +185,14 @@ export default function OsintRun({ config, onNav }) {
             {SYM.check} 完成 — 成功 {result.summary.success} / 失败 {result.summary.failed} / 共 {result.summary.total}
           </Text>
           <Text color="gray" dimColor>输出目录：{result.outDir}</Text>
+          {result.enrichment?.discovered > 0 && (
+            <Text color="cyan" dimColor>
+              Bio 链路扩展：从 {result.enrichment.kols} 个 KOL 的简介中发现了 {result.enrichment.discovered} 个新候选账号（已并入 suspected_accounts）
+            </Text>
+          )}
+          {result.summaryPath && (
+            <Text color="cyan" dimColor>账号汇总：{result.summaryPath}</Text>
+          )}
           <Box flexDirection="column">
             {result.summary.items.slice(0, 10).map(it => (
               <Box key={it.slug} gap={2}>
@@ -153,6 +216,8 @@ export default function OsintRun({ config, onNav }) {
         <KeyBar hints={
           status === 'done'
             ? [{ key: 's', label: '发送到采集' }, { key: 'ESC', label: '返回主菜单' }]
+          : status === 'submitted'
+            ? [{ key: 'j', label: '前往分类任务列表' }, { key: 'ESC', label: '返回主菜单' }]
             : [{ key: 'ESC', label: '返回主菜单' }]
         } />
       )}

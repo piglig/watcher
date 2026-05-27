@@ -2,7 +2,9 @@
  * output.js — Twitter JSON, CSV, and terminal output
  */
 
+import Papa from 'papaparse';
 import { formatNumber } from '../../shared/format.js';
+import { normalizeToPosts } from '../../shared/post.js';
 
 // ── Terminal table ──────────────────────────────────────────────────────────
 
@@ -78,7 +80,7 @@ export function printStats(tweets) {
 // ── JSON ────────────────────────────────────────────────────────────────────
 
 export function toJSON(profile, tweets) {
-  return JSON.stringify({ profile, tweets }, null, 2);
+  return JSON.stringify({ profile, posts: normalizeToPosts(tweets) }, null, 2);
 }
 
 // ── CSV ─────────────────────────────────────────────────────────────────────
@@ -90,14 +92,7 @@ export function toCSV(tweets) {
     'media_count', 'media_urls',
   ];
 
-  const escape = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
-  };
-
-  const rows = tweets.map(t => [
+  const data = tweets.map(t => [
     t.id,
     t.url,
     t.created_at ?? '',
@@ -111,7 +106,6 @@ export function toCSV(tweets) {
     t.metrics.views,
     t.media?.length ?? 0,
     (t.media ?? []).map(m => m.url).join(' | '),
-  ].map(escape).join(','));
-
-  return [HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: HEADERS, data }, { newline: '\n' });
 }

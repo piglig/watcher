@@ -303,7 +303,7 @@ async function fetchCommentsOnPage(page, videoId, username, maxComments, debug) 
             }
           }
         }
-      } catch {}
+      } catch (e) { dbg('[comments] parse failed:', e.message); }
     }
 
     // Fetch author replies for comments that have replies but no inline reply yet
@@ -335,7 +335,7 @@ async function fetchAuthorReplies(page, authorUsername, comments, withReplies, d
       dbg(`[reply data] cid=${cid} count=${j.comments?.length ?? 0}`);
       const reply = (j.comments ?? []).find(r => r.user?.unique_id === authorUsername);
       if (reply && cid && !replyMap.has(cid)) replyMap.set(cid, parseReply(reply));
-    } catch {}
+    } catch (e) { dbg('[reply] parse failed:', e.message); }
   };
   page.on('response', onReply);
 
@@ -486,7 +486,7 @@ export async function scrapeTikTokUser(target, context, opts = {}) {
         }
       }
       dbg(`item_list: +${j.itemList?.length ?? 0} (total: ${videoMap.size}, hasMore: ${state.hasMore})`);
-    } catch {}
+    } catch (e) { dbg('[item_list] parse failed:', e.message); }
   };
   page.on('response', onResponse);
 
@@ -513,8 +513,16 @@ export async function scrapeTikTokUser(target, context, opts = {}) {
     await page.close().catch(() => {});
   }
 
-  // Filter and cap videos
+  // Defensive author filter: TikTok's item_list endpoint is profile-scoped, so
+  // in practice we don't expect cross-author bleed, but keeping the guard
+  // protects us if TikTok ever changes that or if navigation triggers
+  // unrelated item_list calls (e.g. /foryou).
+  const targetUsername = String(username).toLowerCase();
+  const ownedByTarget = (v) =>
+    v.author?.username?.toLowerCase() === targetUsername;
+
   let videos = [...videoMap.values()]
+    .filter(ownedByTarget)
     .filter(filterFn)
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .slice(0, max);

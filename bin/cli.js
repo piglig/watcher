@@ -48,7 +48,7 @@ import { printInstagramStats, toInstagramJSON, toInstagramCSV } from '../src/pla
 import { scrapeTwitch, parseTwitchLogin } from '../src/platforms/twitch/index.js';
 import { printTwitchStats, toTwitchJSON, toTwitchVodsCSV, toTwitchClipsCSV } from '../src/platforms/twitch/index.js';
 
-import { submitBatch, fetchBatchResults, aggregateUserRisk } from '../src/classifier/index.js';
+import { submitBatch, fetchBatchResults, aggregateUserRisk, inferProvider, defaultModelForProvider, apiKeyForProvider, envNameForProvider, AI_PROVIDERS } from '../src/classifier/index.js';
 import { applyRulesAll }            from '../src/classifier/index.js';
 import { printClassifierStats, toClassifierJSON, toUserRiskCSV, toFlaggedPostsCSV } from '../src/classifier/index.js';
 import { normalizePosts, mergeAndNormalize } from '../src/shared/normalize.js';
@@ -60,7 +60,7 @@ import { resolveOutputPath, writeOutput, resolveFormat } from '../src/shared/wri
 
 function addCommonScrapeOptions(cmd) {
   return cmd
-    .option('--max <n>',       'Max items per target', '200')
+    .option('--max <n>',       'Max items per target (default: unlimited)', '1000000')
     .option('--since <date>',  'YYYY-MM-DD lower bound')
     .option('--until <date>',  'YYYY-MM-DD upper bound')
     .option('--keyword <text>','Filter by keyword')
@@ -492,10 +492,11 @@ function resolveInputFiles(input) {
 }
 
 program.command('classify')
-  .description('Classify scraped content for risk using OpenAI Batch API')
+  .description('Classify scraped content for risk using OpenAI, Gemini, or DeepSeek')
   .option('--input <path>',    'JSON file, directory, or glob pattern of scraper output')
-  .option('--api-key <key>',   'OpenAI API key (or OPENAI_API_KEY env var)')
-  .option('--model <model>',   'OpenAI model', 'gpt-4o-mini')
+  .option('--api-key <key>',   'AI provider API key')
+  .option('--provider <name>', 'openai | gemini | deepseek')
+  .option('--model <model>',   'AI model')
   .option('--batch-id <id>',   'Resume an existing batch by ID (use "last" for most recent pending)')
   .option('--wait',            'Poll until batch completes')
   .option('--comments',        'Also classify comments')
@@ -523,10 +524,12 @@ program.command('classify')
 
     // ── resolve batch ID ───────────────────────────────────────────────────────
     let resolvedBatchId = opts.batchId;
+    let resolvedBatchRecord = null;
     if (resolvedBatchId === 'last') {
       const pending = findLastPending();
       if (!pending) { console.error('[ERROR] No pending batch found.'); process.exit(1); }
       resolvedBatchId = pending.id;
+      resolvedBatchRecord = pending;
       console.log(`  Resuming batch: ${resolvedBatchId}`);
     }
 
@@ -536,9 +539,12 @@ program.command('classify')
       process.exit(1);
     }
 
-    const apiKey = opts.apiKey ?? process.env.OPENAI_API_KEY;
+    const provider = inferProvider(opts.model ?? resolvedBatchRecord?.model, opts.provider ?? resolvedBatchRecord?.provider);
+    const model = opts.model ?? resolvedBatchRecord?.model ?? defaultModelForProvider(provider);
+    const apiKey = opts.apiKey ?? apiKeyForProvider(provider);
     if (!apiKey) {
-      console.error('[ERROR] OpenAI API key required: --api-key or OPENAI_API_KEY env var');
+      const envName = envNameForProvider(provider);
+      console.error(`[ERROR] ${envName} required: --api-key or ${envName} env var`);
       process.exit(1);
     }
 
@@ -585,7 +591,7 @@ program.command('classify')
 
     try {
       if (resolvedBatchId) {
-        const result = await fetchBatchResults(resolvedBatchId, { apiKey, wait: opts.wait, debug: opts.debug });
+        const result = await fetchBatchResults(resolvedBatchId, { apiKey, provider, model, wait: opts.wait, debug: opts.debug });
         if (result.status !== 'completed') {
           console.log(`\n  Batch not yet complete: ${result.status}`);
           console.log(`  Re-run with --wait to poll, or check back later.`);
@@ -602,21 +608,28 @@ program.command('classify')
           process.exit(0);
         }
       } else if (llmPosts.length > 0) {
-        const { batchId: newId } = await submitBatch(llmPosts, { apiKey, model: opts.model, debug: opts.debug });
+        const { batchId: newId } = await submitBatch(llmPosts, { apiKey, provider, model, debug: opts.debug });
         saveBatch({
           id:          newId,
-          model:       opts.model,
+          provider,
+          model,
           post_count:  llmPosts.length,
           input_files: opts.input,
           out:         opts.out ?? null,
         });
+        if (provider === AI_PROVIDERS.DEEPSEEK) {
+          updateBatch(newId, { status: 'completed', completed_at: new Date().toISOString() });
+          const result = await fetchBatchResults(newId, { apiKey, provider, model, wait: false, debug: opts.debug });
+          llmResults = result.results;
+        } else {
         console.log(`\n  Batch submitted: ${newId}`);
         console.log(`  Results are usually ready in 1–24 hours.`);
         console.log(`  Resume with: sns-audit classify --batch-id ${newId}${opts.input ? ` --input ${opts.input}` : ''}${opts.out ? ` --out ${opts.out}` : ''} --wait`);
         if (!opts.wait) process.exit(0);
-        const result = await fetchBatchResults(newId, { apiKey, wait: true, debug: opts.debug });
+        const result = await fetchBatchResults(newId, { apiKey, provider, model, wait: true, debug: opts.debug });
         updateBatch(newId, { status: 'completed', completed_at: new Date().toISOString() });
         llmResults = result.results;
+        }
       } else {
         console.log('  All posts handled by rule engine — no LLM batch needed.');
       }
@@ -646,7 +659,15 @@ program.command('classify')
         console.log(`  Saved flagged posts → ${flagFile}`);
       } else {
         const outFile = join(resolve(opts.out), 'classifier_results.json');
-        writeOutput(outFile, toClassifierJSON(userRisks, results));
+        const ruleFlagged = [...ruleResults.values()].filter(r => r.source === 'rules').length;
+        const whitelisted = [...ruleResults.values()].filter(r => r.source === 'whitelist').length;
+        const sourceStats = {
+          total:     posts.length,
+          rules:     ruleFlagged,
+          whitelist: whitelisted,
+          llm:       posts.length - ruleResults.size,
+        };
+        writeOutput(outFile, toClassifierJSON(userRisks, results, sourceStats));
         console.log(`  Saved → ${outFile}`);
       }
     } else {

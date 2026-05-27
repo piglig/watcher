@@ -2,7 +2,9 @@
  * twitch-output.js — Terminal table, stats, JSON and CSV for Twitch VODs/Clips
  */
 
+import Papa from 'papaparse';
 import { formatNumber } from '../../shared/format.js';
+import { normalizeToPosts } from '../../shared/post.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -104,7 +106,10 @@ export function printTwitchStats(profile, videos, clips) {
 // ── Serialization ─────────────────────────────────────────────────────────────
 
 export function toTwitchJSON(profile, videos, clips) {
-  return JSON.stringify({ profile, videos, clips }, null, 2);
+  return JSON.stringify({
+    profile,
+    posts: normalizeToPosts([...(videos ?? []), ...(clips ?? [])]),
+  }, null, 2);
 }
 
 const VOD_HEADERS = [
@@ -123,13 +128,7 @@ const CLIP_HEADERS = [
 ];
 
 export function toTwitchVodsCSV(videos) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
-  };
-  const rows = videos.map(v => [
+  const data = videos.map(v => [
     v.id,
     v.url,
     v.type ?? 'archive',
@@ -143,18 +142,12 @@ export function toTwitchVodsCSV(videos) {
     v.author?.name     ?? '',
     v.view_count ?? 0,
     v.language   ?? '',
-  ].map(esc).join(','));
-  return [VOD_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: VOD_HEADERS, data }, { newline: '\n' });
 }
 
 export function toTwitchClipsCSV(clips) {
-  const esc = v => {
-    const s = String(v ?? '');
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
-  };
-  const rows = clips.map(c => [
+  const data = clips.map(c => [
     c.id,
     c.url,
     c.title ?? '',
@@ -169,6 +162,6 @@ export function toTwitchClipsCSV(clips) {
     c.game_id   ?? '',
     c.game_name ?? '',
     c.language  ?? '',
-  ].map(esc).join(','));
-  return [CLIP_HEADERS.join(','), ...rows].join('\n');
+  ]);
+  return Papa.unparse({ fields: CLIP_HEADERS, data }, { newline: '\n' });
 }
