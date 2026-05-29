@@ -8,6 +8,7 @@
  */
 
 import pRetry, { AbortError } from 'p-retry';
+import { createLogger } from '../../shared/logger.js';
 
 const BASE     = 'https://arctic-shift.photon-reddit.com/api';
 const UA       = 'nodejs:twitter-scraper:1.0';
@@ -17,7 +18,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
 
-async function arcticFetch(path, params = {}) {
+async function arcticFetch(path, params = {}, log = createLogger()) {
   const url = new URL(BASE + path);
   for (const [k, v] of Object.entries(params)) {
     if (v != null) url.searchParams.set(k, String(v));
@@ -30,13 +31,13 @@ async function arcticFetch(path, params = {}) {
     const remaining = parseInt(res.headers.get('x-ratelimit-remaining') ?? '999', 10);
     if (remaining < 20) {
       const reset = parseInt(res.headers.get('x-ratelimit-reset') ?? '10', 10);
-      console.warn(`[arctic] rate limit — ${remaining} left, waiting ${reset}s...`);
+      log.warn(`[arctic] rate limit — ${remaining} left, waiting ${reset}s...`);
       await sleep(reset * 1000);
     }
 
     if (res.status === 429) {
       const wait = parseInt(res.headers.get('retry-after') ?? '60', 10) * 1000;
-      console.warn(`[arctic] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
+      log.warn(`[arctic] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
       await sleep(wait);
       throw new Error('arctic: 429 rate-limited');                       // → retry
     }
@@ -112,7 +113,9 @@ async function fetchListing(path, opts = {}) {
     filter    = () => true,
     debug     = false,
     label     = path,
+    logger    = null,
   } = opts;
+  const log = createLogger(logger);
 
   const seen   = new Set();
   const items  = [];
@@ -137,9 +140,9 @@ async function fetchListing(path, opts = {}) {
       if (k !== 'after' && k !== 'before' && v != null) qp[k] = v;
     }
 
-    if (debug) process.stdout.write(`\n[DBG] arctic ${path} page=${page} cursor=${cursor ?? 'now'}`);
+    if (debug) log.write(`[DBG] arctic ${path} page=${page} cursor=${cursor ?? 'now'}`);
 
-    const batch = await arcticFetch(path, qp);
+    const batch = await arcticFetch(path, qp, log);
     if (!batch.length) break;
 
     for (const raw of batch) {
@@ -149,7 +152,7 @@ async function fetchListing(path, opts = {}) {
       if (item && filter(item)) items.push(item);
     }
 
-    console.log(`[${label}] ${items.length} items (page ${page})`);
+    log.log(`[${label}] ${items.length} items (page ${page})`);
 
     // Slide cursor to just before the oldest item in this batch
     const lastTs = batch[batch.length - 1].created_utc ?? batch[batch.length - 1].created;
@@ -180,12 +183,10 @@ async function fetchListing(path, opts = {}) {
  * @returns {Promise<object[]>}
  */
 export async function fetchSubredditArctic(subreddit, opts = {}) {
-  const { max = 200, since = null, until = null, keyword = null, debug = false } = opts;
+  const { max = 200, since = null, until = null, keyword = null, debug = false, logger = null } = opts;
+  const log = createLogger(logger);
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  r/${subreddit}  [Arctic Shift — full history]`);
-  if (since || until) console.log(`  ${since ?? '∞'} → ${until ?? 'now'}`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`r/${subreddit}  [Arctic Shift — full history]${since || until ? `  ${since ?? '∞'} → ${until ?? 'now'}` : ''}`);
 
   const kw         = keyword ? keyword.toLowerCase() : null;
   const apiParams  = { subreddit };
@@ -193,7 +194,7 @@ export async function fetchSubredditArctic(subreddit, opts = {}) {
   if (until) apiParams.before = Math.floor(new Date(until).getTime() / 1000);
 
   return fetchListing('/posts/search', {
-    max, debug, label: `r/${subreddit}`,
+    max, debug, logger, label: `r/${subreddit}`,
     apiParams,
     parse: parsePost,
     filter: kw ? item => (item.title + ' ' + item.text).toLowerCase().includes(kw) : () => true,
@@ -223,12 +224,11 @@ export async function fetchUserArctic(username, opts = {}) {
     until      = null,
     keyword    = null,
     debug      = false,
+    logger     = null,
   } = opts;
+  const log = createLogger(logger);
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  u/${username}  [Arctic Shift — full history]`);
-  if (since || until) console.log(`  ${since ?? '∞'} → ${until ?? 'now'}`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`u/${username}  [Arctic Shift — full history]${since || until ? `  ${since ?? '∞'} → ${until ?? 'now'}` : ''}`);
 
   const kw        = keyword ? keyword.toLowerCase() : null;
   const baseParams = { author: username };
@@ -243,9 +243,9 @@ export async function fetchUserArctic(username, opts = {}) {
   const allItems = [];
 
   if (!noPosts) {
-    console.log('  → Posts...');
+    log.log('  → Posts...');
     const posts = await fetchListing('/posts/search', {
-      max, debug, label: 'posts',
+      max, debug, logger, label: 'posts',
       apiParams: { ...baseParams },
       parse: parsePost,
       filter: kwFilter,
@@ -255,9 +255,9 @@ export async function fetchUserArctic(username, opts = {}) {
 
   if (!noComments) {
     if (!noPosts) await sleep(DELAY_MS);
-    console.log('  → Comments...');
+    log.log('  → Comments...');
     const comments = await fetchListing('/comments/search', {
-      max, debug, label: 'comments',
+      max, debug, logger, label: 'comments',
       apiParams: { ...baseParams },
       parse: parseComment,
       filter: kwFilter,
@@ -288,6 +288,7 @@ export async function fetchUserArctic(username, opts = {}) {
 export async function scrapeArctic(targets, opts = {}) {
   const list    = Array.isArray(targets) ? targets : [targets];
   const results = {};
+  const log     = createLogger(opts.logger);
 
   for (const target of list) {
     const rMatch = target.match(/^r\/(.+)/i);
@@ -298,7 +299,7 @@ export async function scrapeArctic(targets, opts = {}) {
     } else if (uMatch) {
       results[target] = await fetchUserArctic(uMatch[1], opts);
     } else {
-      console.warn(`[WARN] Unknown target "${target}" — expected r/subreddit or u/username`);
+      log.warn(`Unknown target "${target}" — expected r/subreddit or u/username`);
     }
 
     if (list.indexOf(target) < list.length - 1) await sleep(DELAY_MS);

@@ -13,7 +13,12 @@ export const BATCH_STATUS = Object.freeze({
   FAILED:    'failed',
 });
 
-const store = createRecordStore('batches.json', { timestamps: false });
+// Promote status + kind to real columns: callers filter heavily by both
+// (`kind === 'osint'`, `status === 'pending'`).
+const store = createRecordStore('batches.json', {
+  timestamps: false,
+  columns: { status: 'TEXT', kind: 'TEXT' },
+});
 
 /**
  * Save a new batch record.
@@ -35,9 +40,20 @@ export function listBatches() {
   return store.list();
 }
 
+/** Batches of a given kind ('osint', 'classify', ...). Indexed lookup. */
+export function listBatchesByKind(kind) {
+  return store.findWhere(`kind = ?`, kind);
+}
+
+/** Pending batches only (any kind). Indexed lookup. */
+export function listPendingBatches() {
+  return store.findWhere(`status = ?`, BATCH_STATUS.PENDING);
+}
+
 /** Most recently submitted batch still pending; null if none. */
 export function findLastPending() {
-  return store.list().find(r => r.status === BATCH_STATUS.PENDING) ?? null;
+  const recs = store.findWhere(`status = ?`, BATCH_STATUS.PENDING);
+  return recs[0] ?? null;
 }
 
 export function deleteBatch(batchId) {

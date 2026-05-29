@@ -10,12 +10,13 @@
  */
 
 import pRetry, { AbortError } from 'p-retry';
+import { createLogger } from '../shared/logger.js';
 
 const BASE_URL = 'https://api.x.ai/v1';
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function xaiFetch(apiKey, path, init = {}) {
+async function xaiFetch(apiKey, path, init = {}, log = createLogger()) {
   return pRetry(async () => {
     const res = await fetch(`${BASE_URL}${path}`, {
       ...init,
@@ -28,7 +29,7 @@ async function xaiFetch(apiKey, path, init = {}) {
 
     if (res.status === 429) {
       const wait = parseInt(res.headers.get('retry-after') ?? '30', 10) * 1000;
-      console.warn(`[xai] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
+      log.warn(`[xai] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
       await sleep(wait);
       throw new Error('xai: 429 rate-limited');                          // → retry
     }

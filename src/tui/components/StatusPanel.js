@@ -15,9 +15,13 @@ import { fmtElapsed } from '../hooks/useElapsed.js';
  * @param {string} p.label       Header text.
  * @param {number} [p.elapsed]   Seconds; renders dim mm:ss when provided.
  * @param {string} [p.error]     Red error line below.
+ * @param {React.ReactNode} [p.headerRight]  Node placed right of the label
+ *                                           (e.g. an <ElapsedTimer/> that owns
+ *                                           its own tick so the panel itself
+ *                                           doesn't re-render every second).
  * @param {React.ReactNode} [p.children]  Extra rows inside the same panel.
  */
-export default function StatusPanel({ color, icon, label, elapsed, error, children }) {
+function StatusPanel({ color, icon, label, elapsed, error, headerRight, children }) {
   const glyph = icon ?? defaultIcon(color);
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={2} paddingY={0}>
@@ -26,12 +30,15 @@ export default function StatusPanel({ color, icon, label, elapsed, error, childr
         {Number.isFinite(elapsed) && (
           <Text color="gray" dimColor>{fmtElapsed(elapsed)}</Text>
         )}
+        {headerRight}
       </Box>
       {error && <Text color="red" wrap="truncate">  {error}</Text>}
       {children}
     </Box>
   );
 }
+
+export default React.memo(StatusPanel);
 
 function defaultIcon(color) {
   switch (color) {

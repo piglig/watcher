@@ -1,13 +1,17 @@
 /**
- * LogPanel — unified bordered log container used by every run screen.
+ * LogPanel — fixed-window bordered log container.
  *
- * Composes:
- *   - bordered gray box with title row "日志 · 最近 N 行"
- *   - LogLine per entry (auto-colored / iconified by content)
- *   - empty-state placeholder + fixed minHeight to prevent UI jitter
+ * Now used ONLY for disk-sourced, low-frequency logs (SessionView's
+ * session.logs, re-read every poll with a fresh array identity). High-frequency
+ * streaming logs on the run screens use <StaticLog> instead, which prints each
+ * line once into terminal scrollback and never re-renders it.
+ *
+ * Accepts either raw strings (parsed inline) or pre-parsed entry records.
+ * React.memo'd so it skips re-render when its parent ticks but `logs` is
+ * unchanged.
  *
  * Props:
- *   logs       — string[] of recent log lines
+ *   logs       — string[] | entry[] of recent log lines
  *   limit      — soft cap; only the last `limit` entries are shown (default 14)
  *   title      — panel title (default "日志")
  *   emptyText  — placeholder when no logs yet (default "等待事件…")
@@ -17,8 +21,9 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import LogLine from './LogLine.js';
+import { parseLogLine } from '../parseLogLine.js';
 
-export default function LogPanel({
+function LogPanel({
   logs,
   limit     = 14,
   title     = '日志',
@@ -45,8 +50,12 @@ export default function LogPanel({
       {visible.length === 0 ? (
         <Text color="gray" dimColor>  {emptyText}</Text>
       ) : (
-        visible.map((l, i) => <LogLine key={i} line={l} />)
+        visible.map((l, i) => (
+          <LogLine key={i} entry={typeof l === 'string' ? parseLogLine(l) : l} />
+        ))
       )}
     </Box>
   );
 }
+
+export default React.memo(LogPanel);

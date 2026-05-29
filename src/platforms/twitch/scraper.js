@@ -8,6 +8,8 @@
  * Rate limit: 800 req/min per Client-ID，远超日常用量。
  */
 
+import { createLogger } from '../../shared/logger.js';
+
 const HELIX       = 'https://api.twitch.tv/helix';
 const TOKEN_URL   = 'https://id.twitch.tv/oauth2/token';
 const CLIENT_ID_ENV     = 'TWITCH_CLIENT_ID';
@@ -46,21 +48,21 @@ function makeHeaders(clientId, token) {
   };
 }
 
-async function helixGet(path, params, headers, debug = false) {
+async function helixGet(path, params, headers, debug = false, log = createLogger()) {
   const url = new URL(`${HELIX}${path}`);
   for (const [k, v] of Object.entries(params)) {
     if (v != null) url.searchParams.set(k, String(v));
   }
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
   dbg(`GET ${url.toString()}`);
 
   const res = await fetch(url.toString(), { headers });
   if (res.status === 429) {
     const retry = Number(res.headers.get('Ratelimit-Reset') ?? 0);
     const wait  = Math.max(0, retry * 1000 - Date.now()) + 1000;
-    console.warn(`[WARN] Twitch rate limit — waiting ${Math.ceil(wait / 1000)}s...`);
+    log.warn(`[WARN] Twitch rate limit — waiting ${Math.ceil(wait / 1000)}s...`);
     await new Promise(r => setTimeout(r, wait));
-    return helixGet(path, params, headers, debug);
+    return helixGet(path, params, headers, debug, log);
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -161,7 +163,8 @@ function parseClip(c) {
 // ── Paginated fetchers ────────────────────────────────────────────────────────
 
 async function fetchAllVideos(userId, headers, opts = {}) {
-  const { max = 1000, type = 'all', debug = false } = opts;
+  const { max = 1000, type = 'all', debug = false, logger = null } = opts;
+  const log    = createLogger(logger);
   const items  = [];
   let   cursor = null;
 
@@ -173,7 +176,7 @@ async function fetchAllVideos(userId, headers, opts = {}) {
     };
     if (cursor) params.after = cursor;
 
-    const data = await helixGet('/videos', params, headers, debug);
+    const data = await helixGet('/videos', params, headers, debug, log);
     for (const v of (data.data ?? [])) {
       const parsed = parseVideo(v);
       if (parsed) items.push(parsed);
@@ -181,14 +184,15 @@ async function fetchAllVideos(userId, headers, opts = {}) {
 
     cursor = data.pagination?.cursor;
     if (!cursor || !data.data?.length) break;
-    console.log(`Twitch VODs: ${items.length} fetched...`);
+    log.log(`Twitch VODs: ${items.length} fetched...`);
   }
 
   return items;
 }
 
 async function fetchAllClips(broadcasterId, headers, opts = {}) {
-  const { max = 1000, since, until, debug = false } = opts;
+  const { max = 1000, since, until, debug = false, logger = null } = opts;
+  const log    = createLogger(logger);
   const items  = [];
   let   cursor = null;
 
@@ -201,7 +205,7 @@ async function fetchAllClips(broadcasterId, headers, opts = {}) {
     if (since)   params.started_at = new Date(since).toISOString();
     if (until)   params.ended_at   = new Date(until).toISOString();
 
-    const data = await helixGet('/clips', params, headers, debug);
+    const data = await helixGet('/clips', params, headers, debug, log);
     for (const c of (data.data ?? [])) {
       const parsed = parseClip(c);
       if (parsed) items.push(parsed);
@@ -209,15 +213,15 @@ async function fetchAllClips(broadcasterId, headers, opts = {}) {
 
     cursor = data.pagination?.cursor;
     if (!cursor || !data.data?.length) break;
-    console.log(`Twitch Clips: ${items.length} fetched...`);
+    log.log(`Twitch Clips: ${items.length} fetched...`);
   }
 
   return items;
 }
 
-async function fetchFollowers(broadcasterId, headers, debug = false) {
+async function fetchFollowers(broadcasterId, headers, debug = false, log = createLogger()) {
   try {
-    const data = await helixGet('/channels/followers', { broadcaster_id: broadcasterId, first: 1 }, headers, debug);
+    const data = await helixGet('/channels/followers', { broadcaster_id: broadcasterId, first: 1 }, headers, debug, log);
     return data.total ?? 0;
   } catch {
     return 0;
@@ -251,47 +255,49 @@ export async function scrapeTwitchChannel(login, clientId, clientSecret, opts = 
     maxClips  = max,
     vodType   = 'all',       // 'all' | 'archive' | 'highlight' | 'upload'
     debug     = false,
+    logger    = null,
     ...filterOpts
   } = opts;
 
+  const log      = createLogger(logger);
   const filterFn = buildFilter(filterOpts);
-  const dbg      = (...m) => debug && console.log('[DBG]', ...m);
+  const dbg      = (...m) => debug && log.log('[DBG]', ...m);
 
-  console.log('\nTwitch: acquiring app access token...');
+  log.log('Twitch: acquiring app access token...');
   const token   = await getAppToken(clientId, clientSecret);
   const headers = makeHeaders(clientId, token);
 
   // 1. User info
-  console.log(`Twitch: fetching user @${login}...`);
-  const userData = await helixGet('/users', { login }, headers, debug);
+  log.log(`Twitch: fetching user @${login}...`);
+  const userData = await helixGet('/users', { login }, headers, debug, log);
   const rawUser  = userData.data?.[0];
   if (!rawUser) throw new Error(`Twitch user not found: ${login}`);
   const profile = parseUser(rawUser);
 
   // 2. Follower count (separate endpoint)
-  profile.followers = await fetchFollowers(profile.id, headers, debug);
+  profile.followers = await fetchFollowers(profile.id, headers, debug, log);
   dbg(`${profile.display_name} — ${profile.followers} followers`);
 
   // 3. VODs
   let videos = [];
   if (maxVods > 0) {
-    console.log('Twitch: fetching VODs...');
+    log.log('Twitch: fetching VODs...');
     videos = await fetchAllVideos(profile.id, headers, {
-      max: maxVods, type: vodType, debug,
+      max: maxVods, type: vodType, debug, logger,
     });
-    console.log(`Twitch VODs: ${videos.length} total`);
+    log.log(`Twitch VODs: ${videos.length} total`);
   }
 
   // 4. Clips
   let clips = [];
   if (maxClips > 0) {
-    console.log('Twitch: fetching Clips...');
+    log.log('Twitch: fetching Clips...');
     clips = await fetchAllClips(profile.id, headers, {
-      max: maxClips, debug,
+      max: maxClips, debug, logger,
       since: filterOpts.since,
       until: filterOpts.until,
     });
-    console.log(`Twitch Clips: ${clips.length} total`);
+    log.log(`Twitch Clips: ${clips.length} total`);
   }
 
   // 5. Filter + sort
@@ -310,8 +316,10 @@ export async function scrapeTwitch(targets, opts = {}) {
     clientId     = process.env[CLIENT_ID_ENV],
     clientSecret = process.env[CLIENT_SECRET_ENV],
     debug        = false,
+    logger: rawLogger = null,
     ...channelOpts
   } = opts;
+  const log = createLogger(rawLogger);
 
   if (!clientId || !clientSecret) {
     throw new Error(
@@ -329,10 +337,8 @@ export async function scrapeTwitch(targets, opts = {}) {
 
   const results = {};
   for (const login of logins) {
-    console.log(`\n${'═'.repeat(52)}`);
-    console.log(`  ${login}  [Twitch]`);
-    console.log(`${'═'.repeat(52)}`);
-    results[login] = await scrapeTwitchChannel(login, clientId, clientSecret, { debug, ...channelOpts });
+    log.log(`${login}  [Twitch]`);
+    results[login] = await scrapeTwitchChannel(login, clientId, clientSecret, { debug, logger: rawLogger, ...channelOpts });
   }
   return results;
 }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, useWindowSize } from 'ink';
+import { Box } from 'ink';
+import { useWindowSize } from './hooks/useWindowSize.js';
 import Header        from './components/Header.js';
 import MainMenu      from './screens/MainMenu.js';
 import Settings      from './screens/Settings.js';
@@ -16,11 +17,11 @@ import PipelineRun   from './screens/PipelineRun.js';
 import JobsList      from './screens/JobsList.js';
 import DataPreview   from './screens/DataPreview.js';
 
-import { listActiveSessions, getSession, SESSION_STATE } from '../shared/sessions-store.js';
-import { listBatches, BATCH_STATUS } from '../shared/batch-store.js';
+import { listActiveSessions, getSession, appendSessionLog, SESSION_STATE } from '../shared/sessions-store.js';
+import { listPendingBatches } from '../shared/batch-store.js';
 import { advanceSession } from '../classifier/session.js';
 import { fetchBatchResults } from '../osint/index.js';
-import { finalizeWorkflowFromSession } from '../workflow/orchestrator.js';
+import { finalizeWorkflowFromSession, runWorkflowQueue } from '../workflow/orchestrator.js';
 
 const SUBTITLES = {
   menu:             '多平台内容风险审查',
@@ -59,8 +60,11 @@ function useSessionDaemon() {
           if (cancelled) break;
           const next = await advanceSession(s);
           if (next?.state === SESSION_STATE.COMPLETED && next.workflow_id) {
+            // Route finalize failures into the session log so they surface in
+            // SessionView — console.* is invisible (and corrupts the Ink render)
+            // while the TUI owns the terminal.
             try { await finalizeWorkflowFromSession(next); }
-            catch (e) { console.warn('[workflow] finalize failed:', e.message ?? e); }
+            catch (e) { appendSessionLog(next.id, `⚠ 报告汇总失败：${e.message ?? e}`); }
           }
         }
 
@@ -68,7 +72,7 @@ function useSessionDaemon() {
         // `fetchBatchResults` itself updates batch-store on completion.
         const xaiKey = process.env.XAI_API_KEY;
         if (xaiKey) {
-          const pending = listBatches().filter(b => b.kind === 'osint' && b.status === BATCH_STATUS.PENDING);
+          const pending = listPendingBatches().filter(b => b.kind === 'osint');
           for (const b of pending) {
             if (cancelled) break;
             if (!b.out_dir) continue;
@@ -79,6 +83,15 @@ function useSessionDaemon() {
             }
           }
         }
+
+        // ── Workflows ─────────────────────────────────────────────────
+        // Kick the sequential workflow queue so a multi-KOL batch finishes on
+        // its own (OSINT retrieval → scrape, one KOL/stage at a time). Fired
+        // WITHOUT await: the queue's long scrape stage must never block this
+        // tick, and its `busy` mutex makes re-kicks no-ops. From classify_pending
+        // onward the workflow-bound session is advanced by the classify loop
+        // above, so the queue doesn't touch it.
+        runWorkflowQueue().catch(e => console.warn('[workflow] queue failed:', e.message ?? e));
       } finally {
         tickingRef.current = false;
       }
@@ -104,7 +117,7 @@ export default function App() {
   };
 
   return (
-    <Box flexDirection="column" width={columns} height={rows}>
+    <Box flexDirection="column" width={columns}>
       <Header subtitle={SUBTITLES[screen]} />
       {screen === 'menu'           && <MainMenu       onNav={onNav} />}
       {screen === 'settings'       && <Settings       onNav={onNav} />}

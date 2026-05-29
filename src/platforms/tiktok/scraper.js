@@ -8,6 +8,7 @@ import { resolve }           from 'path';
 import { waitForLoginSignal } from '../../shared/login-signal.js';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { launchPersistentContext } from 'cloakbrowser';
+import { createLogger } from '../../shared/logger.js';
 
 export const DEFAULT_SESSION_DIR = resolve('sessions/tiktok');
 
@@ -73,11 +74,9 @@ export async function isLoggedInTikTok(page) {
   } catch { return false; }
 }
 
-async function waitForLogin(page) {
-  console.log('\nNot logged in. Please log in to TikTok in the browser window.');
-  console.log('─'.repeat(50));
-  console.log('  After login completes → press Enter here to confirm');
-  console.log('─'.repeat(50));
+async function waitForLogin(page, log) {
+  log.log('Not logged in. Please log in to TikTok in the browser window.');
+  log.log('  After login completes → press Enter here to confirm');
 
   return Promise.race([
     (async () => {
@@ -222,8 +221,9 @@ function buildFilter(opts = {}) {
 
 // ── Video scrolling ───────────────────────────────────────────────────────────
 
-async function scrollForVideos(page, videoMap, { max, debug, state }) {
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+async function scrollForVideos(page, videoMap, { max, debug, state, logger }) {
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
   let stale = 0;
 
   while (videoMap.size < max && stale < 4) {
@@ -240,7 +240,7 @@ async function scrollForVideos(page, videoMap, { max, debug, state }) {
     } else {
       stale = 0;
     }
-    console.log(`Videos collected: ${videoMap.size}`);
+    log.log(`Videos collected: ${videoMap.size}`);
     dbg(`scroll — videos: ${videoMap.size}, stale: ${stale}, hasMore: ${state.hasMore}`);
   }
 
@@ -251,8 +251,8 @@ async function scrollForVideos(page, videoMap, { max, debug, state }) {
 // ── Comment fetching ──────────────────────────────────────────────────────────
 
 // Takes a pre-created page so it can be reused across multiple videos.
-async function fetchCommentsOnPage(page, videoId, username, maxComments, debug) {
-  const dbg      = (...m) => debug && console.log('[DBG]', ...m);
+async function fetchCommentsOnPage(page, videoId, username, maxComments, debug, log = createLogger()) {
+  const dbg      = (...m) => debug && log.log('[DBG]', ...m);
   const comments = [];
   const seen     = new Set();
 
@@ -427,7 +427,7 @@ async function fetchAuthorReplies(page, authorUsername, comments, withReplies, d
   dbg(`author replies found: ${replyMap.size}/${withReplies.length}`);
 }
 
-async function fetchCommentsParallel(context, videos, maxComments, debug) {
+async function fetchCommentsParallel(context, videos, maxComments, debug, log = createLogger()) {
   const n = Math.min(COMMENT_CONCURRENCY, videos.length);
   // Pre-create pages once and reuse them across all videos to avoid
   // repeated page creation/destruction overhead
@@ -441,9 +441,9 @@ async function fetchCommentsParallel(context, videos, maxComments, debug) {
     while (next < videos.length) {
       const i = next++;
       const v = videos[i];
-      results[i] = await fetchCommentsOnPage(page, v.id, v.author.username, maxComments, debug);
+      results[i] = await fetchCommentsOnPage(page, v.id, v.author.username, maxComments, debug, log);
       done++;
-      console.log(`Comments: ${done}/${videos.length}`);
+      log.log(`Comments: ${done}/${videos.length}`);
     }
     await page.close().catch(() => {});
   };
@@ -461,7 +461,8 @@ export async function scrapeTikTokUser(target, context, opts = {}) {
     debug       = false,
     ...filterOpts
   } = opts;
-  const dbg      = (...m) => debug && console.log('[DBG]', ...m);
+  const log      = createLogger(opts.logger);
+  const dbg      = (...m) => debug && log.log('[DBG]', ...m);
   const filterFn = buildFilter(filterOpts);
   const { username } = target;
 
@@ -507,7 +508,7 @@ export async function scrapeTikTokUser(target, context, opts = {}) {
     if (profile) dbg(`profile: ${profile.nickname} — ${profile.followers} followers`);
 
     // Scroll to collect videos
-    await scrollForVideos(page, videoMap, { max, debug, state });
+    await scrollForVideos(page, videoMap, { max, debug, state, logger: opts.logger });
   } finally {
     page.off('response', onResponse);
     await page.close().catch(() => {});
@@ -529,8 +530,8 @@ export async function scrapeTikTokUser(target, context, opts = {}) {
 
   // Fetch comments if requested
   if (maxComments > 0 && videos.length > 0) {
-    console.log(`  Fetching comments for ${videos.length} videos (${COMMENT_CONCURRENCY} parallel)...`);
-    const commentResults = await fetchCommentsParallel(context, videos, maxComments, debug);
+    log.log(`  Fetching comments for ${videos.length} videos (${COMMENT_CONCURRENCY} parallel)...`);
+    const commentResults = await fetchCommentsParallel(context, videos, maxComments, debug, log);
     for (let i = 0; i < videos.length; i++) {
       videos[i].comments = commentResults[i] ?? [];
     }
@@ -554,8 +555,10 @@ export async function scrapeTikTok(targets, opts = {}) {
     debug        = false,
     resetSession = false,
     sessionDir   = DEFAULT_SESSION_DIR,
+    logger: rawLogger = null,
     ...userOpts
   } = opts;
+  const log = createLogger(rawLogger);
 
   if (resetSession && existsSync(sessionDir))
     rmSync(sessionDir, { recursive: true, force: true });
@@ -578,20 +581,18 @@ export async function scrapeTikTok(targets, opts = {}) {
         await context.close();
         throw new Error('Session expired. Run with --headed to re-login.');
       }
-      const ok = await waitForLogin(loginPage);
+      const ok = await waitForLogin(loginPage, log);
       if (!ok) throw new Error('Login timed out.');
-      console.log('\nLogin confirmed. Starting scrape...');
+      log.log('Login confirmed. Starting scrape...');
     } else {
-      console.log('Session active.');
+      log.log('Session active.');
     }
     await loginPage.close();
 
     const results = {};
     for (const target of parsed) {
-      console.log(`\n${'═'.repeat(52)}`);
-      console.log(`  @${target.username}  [TikTok]`);
-      console.log(`${'═'.repeat(52)}`);
-      results[target.username] = await scrapeTikTokUser(target, context, { debug, ...userOpts });
+      log.log(`@${target.username} [TikTok]`);
+      results[target.username] = await scrapeTikTokUser(target, context, { debug, logger: rawLogger, ...userOpts });
     }
     return results;
   } finally {

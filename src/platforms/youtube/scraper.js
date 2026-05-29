@@ -9,6 +9,7 @@ import { promisify } from 'util';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'fs';
 import { resolve, join } from 'path';
 import { google }    from 'googleapis';
+import { createLogger } from '../../shared/logger.js';
 
 const execFileAsync = promisify(execFile);
 const API_KEY_ENV   = 'YOUTUBE_API_KEY';
@@ -44,7 +45,7 @@ function makeClient(apiKey) {
   return google.youtube({ version: 'v3', auth: apiKey });
 }
 
-async function resolveChannelByHandle(yt, handle) {
+async function resolveChannelByHandle(yt, handle, log = createLogger()) {
   // Strategy 1: forHandle (supported since YouTube introduced @handles in 2023)
   const r1 = await yt.channels.list({
     part:      ['snippet', 'statistics', 'contentDetails'],
@@ -54,7 +55,7 @@ async function resolveChannelByHandle(yt, handle) {
 
   // Strategy 2: search.list — works for legacy custom URLs (/c/<name>, /user/<name>)
   // that don't yet map to a handle, costs 100 quota units vs 1 for channels.list.
-  console.log(`  forHandle returned nothing; falling back to search for "${handle}"...`);
+  log.log(`  forHandle returned nothing; falling back to search for "${handle}"...`);
   const r2 = await yt.search.list({
     part:       ['snippet'],
     q:          handle.replace(/^@/, ''),
@@ -76,7 +77,7 @@ async function resolveChannelByHandle(yt, handle) {
   return r3.data.items?.[0] ?? null;
 }
 
-async function fetchChannel(yt, target) {
+async function fetchChannel(yt, target, log = createLogger()) {
   let ch = null;
   if (target.channelId) {
     const res = await yt.channels.list({
@@ -85,7 +86,7 @@ async function fetchChannel(yt, target) {
     });
     ch = res.data.items?.[0] ?? null;
   } else {
-    ch = await resolveChannelByHandle(yt, target.handle);
+    ch = await resolveChannelByHandle(yt, target.handle, log);
   }
   if (!ch) throw new Error(`Channel not found: ${JSON.stringify(target)}`);
 
@@ -114,7 +115,7 @@ async function fetchChannel(yt, target) {
   };
 }
 
-async function fetchVideoIds(yt, uploadsPlaylistId, max) {
+async function fetchVideoIds(yt, uploadsPlaylistId, max, log = createLogger()) {
   const ids = [];
   let pageToken;
 
@@ -132,7 +133,7 @@ async function fetchVideoIds(yt, uploadsPlaylistId, max) {
       // YouTube Music topic channels, Shorts-only creators in certain regions).
       const reason = e?.errors?.[0]?.reason ?? e?.code;
       if (reason === 'playlistNotFound' || e?.response?.status === 404) {
-        console.warn(`[WARN] Uploads playlist ${uploadsPlaylistId} not accessible (${reason ?? '404'}).`);
+        log.warn(`[WARN] Uploads playlist ${uploadsPlaylistId} not accessible (${reason ?? '404'}).`);
         return ids;
       }
       throw e;
@@ -299,38 +300,40 @@ export async function scrapeYouTubeChannel(target, apiKey, opts = {}) {
     transcript = false,
     transcriptLangs = 'ja,en',
     debug      = false,
+    logger     = null,
     ...filterOpts
   } = opts;
 
-  const dbg      = (...m) => debug && console.log('[DBG]', ...m);
+  const log      = createLogger(logger);
+  const dbg      = (...m) => debug && log.log('[DBG]', ...m);
   const filterFn = buildFilter(filterOpts);
   const yt       = makeClient(apiKey);
 
   // 1. Channel
-  const profile = await fetchChannel(yt, target);
-  console.log(`  Channel: ${profile.title} (${profile.id}) — ${profile.subscribers} subscribers, ${profile.video_count} videos reported`);
+  const profile = await fetchChannel(yt, target, log);
+  log.log(`  Channel: ${profile.title} (${profile.id}) — ${profile.subscribers} subscribers, ${profile.video_count} videos reported`);
 
   if (!profile.uploads_playlist) {
-    console.warn(`[WARN] No uploads playlist for ${profile.title} — channel has hidden video list. Trying search fallback...`);
+    log.warn(`[WARN] No uploads playlist for ${profile.title} — channel has hidden video list. Trying search fallback...`);
   }
 
   // 2. Video IDs
-  console.log('  Fetching video list...');
+  log.log('  Fetching video list...');
   let videoIds = profile.uploads_playlist
-    ? await fetchVideoIds(yt, profile.uploads_playlist, max)
+    ? await fetchVideoIds(yt, profile.uploads_playlist, max, log)
     : [];
   if (!videoIds.length && profile.video_count > 0) {
-    console.log(`  Uploads playlist empty (channel reports ${profile.video_count} videos) — using search.list fallback`);
+    log.log(`  Uploads playlist empty (channel reports ${profile.video_count} videos) — using search.list fallback`);
     videoIds = await fetchVideoIdsBySearch(yt, profile.id, max);
   }
-  console.log(`  ${videoIds.length} videos found`);
+  log.log(`  ${videoIds.length} videos found`);
 
   if (!videoIds.length) return { profile, videos: [] };
 
   // 3. Video details
-  console.log('  Fetching video details...');
+  log.log('  Fetching video details...');
   let videos = await fetchVideoDetails(yt, videoIds);
-  console.log(`  ${videos.length} videos parsed`);
+  log.log(`  ${videos.length} videos parsed`);
 
   // 4. Filter + sort
   videos = videos
@@ -340,11 +343,11 @@ export async function scrapeYouTubeChannel(target, apiKey, opts = {}) {
 
   // 5. Transcripts (optional)
   if (transcript && videos.length > 0) {
-    console.log(`  Fetching transcripts for ${videos.length} videos...`);
+    log.log(`  Fetching transcripts for ${videos.length} videos...`);
     for (let i = 0; i < videos.length; i++) {
       const v = videos[i];
       v.transcript = await fetchTranscript(v.id, transcriptLangs);
-      console.log(`Transcripts: ${i + 1}/${videos.length}`);
+      log.log(`Transcripts: ${i + 1}/${videos.length}`);
       dbg(`${v.id}: transcript ${v.transcript ? v.transcript.length + ' chars' : 'empty'}`);
     }
   }
@@ -356,8 +359,10 @@ export async function scrapeYouTube(targets, opts = {}) {
   const {
     apiKey = process.env[API_KEY_ENV],
     debug  = false,
+    logger: rawLogger = null,
     ...channelOpts
   } = opts;
+  const log = createLogger(rawLogger);
 
   if (!apiKey) {
     throw new Error(
@@ -375,10 +380,8 @@ export async function scrapeYouTube(targets, opts = {}) {
   const results = {};
   for (const target of parsed) {
     const label = target.channelId ?? `@${target.handle}`;
-    console.log(`\n${'═'.repeat(52)}`);
-    console.log(`  ${label}  [YouTube]`);
-    console.log(`${'═'.repeat(52)}`);
-    results[label] = await scrapeYouTubeChannel(target, apiKey, { debug, ...channelOpts });
+    log.log(`${label}  [YouTube]`);
+    results[label] = await scrapeYouTubeChannel(target, apiKey, { debug, logger: rawLogger, ...channelOpts });
   }
   return results;
 }

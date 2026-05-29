@@ -13,9 +13,10 @@
 import { resolve }                          from 'path';
 import { writeFileSync }                    from 'fs';
 import { waitForLoginSignal }               from '../../shared/login-signal.js';
+import { createLogger }                      from '../../shared/logger.js';
 import {
-  createBrowser,
-  clearSession, sessionExists,
+  launchSessionContext, saveSessionState,
+  hasSavedSession, clearSessionState,
 }                                           from '../../shared/browser.js';
 
 const DESKTOP_VIEWPORT = { width: 1280, height: 900 };
@@ -89,11 +90,9 @@ export async function isLoggedInFacebook(page) {
   }
 }
 
-async function waitForFacebookLogin(page) {
-  console.log('\nNot logged in. Please log in to Facebook in the browser window.');
-  console.log('─'.repeat(50));
-  console.log('  After login completes → press Enter here to confirm');
-  console.log('─'.repeat(50));
+async function waitForFacebookLogin(page, log = createLogger()) {
+  log.log('Not logged in. Please log in to Facebook in the browser window.');
+  log.log('  After login completes → press Enter here to confirm');
 
   return new Promise(resolve => {
     let done = false;
@@ -316,8 +315,9 @@ function findStoriesInObj(obj, results, depth = 0, signals = null) {
 // ── Interceptor ───────────────────────────────────────────────────────────────
 
 export function attachFacebookInterceptor(page, postMap, state, opts = {}) {
-  const { debug = false } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const { debug = false, logger = null } = opts;
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   page.on('response', async response => {
     const url    = response.url();
@@ -325,7 +325,7 @@ export function attachFacebookInterceptor(page, postMap, state, opts = {}) {
 
     if (status === 429) {
       state.rateLimitUntil = Date.now() + 60_000;
-      console.warn('[WARN] Rate limit 429 — pausing 60s...');
+      log.warn('[WARN] Rate limit 429 — pausing 60s...');
       return;
     }
     if (!url.includes('facebook.com') || status !== 200) return;
@@ -396,8 +396,9 @@ async function extractSSRStories(page, state = null) {
 // ── Scroll loop ───────────────────────────────────────────────────────────────
 
 async function scrollPage(page, postMap, state, opts = {}) {
-  const { max = 200, debug = false, onProgress = null } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const { max = 200, debug = false, onProgress = null, logger = null } = opts;
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   let staleRounds = 0;
   let prevCount   = postMap.size;
@@ -412,17 +413,17 @@ async function scrollPage(page, postMap, state, opts = {}) {
     round++;
 
     if (state.feedExhausted) {
-      console.log(`Facebook: feed exhausted (has_next_page=false). Stopping at ${postMap.size}.`);
+      log.log(`Facebook: feed exhausted (has_next_page=false). Stopping at ${postMap.size}.`);
       break;
     }
 
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
-      console.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
+      log.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
       await page.waitForTimeout(pause);
     }
 
-    console.log(`Facebook: ${postMap.size} collected (scroll #${round})`);
+    log.log(`Facebook: ${postMap.size} collected (scroll #${round})`);
     if (onProgress) onProgress(postMap.size, null);
 
     for (let i = 0; i < 15; i++) {
@@ -483,15 +484,15 @@ export async function scrapeFacebookUser(target, context, opts = {}) {
     max         = 1000,
     debug       = false,
     onProgress  = null,
+    logger      = null,
     ...filterOpts
   } = opts;
+  const log = createLogger(logger);
   const userProgress = onProgress
     ? (count) => onProgress(`${target}: ${count} 条`)
     : null;
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  ${target}  [Facebook]`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`  ${target}  [Facebook]`);
 
   const postMap = new Map();
   const targetKey = target.toLowerCase().replace(/^profile\.php\?id=/, '').replace(/^people\/[^/]+\//, '');
@@ -509,7 +510,7 @@ export async function scrapeFacebookUser(target, context, opts = {}) {
   const filterFn = buildFilter(filterOpts);
   const page    = await setupDesktopPage(context);
 
-  attachFacebookInterceptor(page, postMap, state, { debug });
+  attachFacebookInterceptor(page, postMap, state, { debug, logger });
 
   try {
     await page.goto(profileUrl(target), {
@@ -524,7 +525,7 @@ export async function scrapeFacebookUser(target, context, opts = {}) {
       bodyText.includes('该内容目前无法显示') ||
       bodyText.includes('找不到该页面');
     if (notFound) {
-      console.error(`[ERROR] ${target} not found or unavailable.`);
+      log.error(`[ERROR] ${target} not found or unavailable.`);
       return { profile: null, posts: [] };
     }
 
@@ -532,9 +533,9 @@ export async function scrapeFacebookUser(target, context, opts = {}) {
     for (const p of ssr) {
       if (!postMap.has(p.id)) postMap.set(p.id, p);
     }
-    console.log(`Facebook: ${postMap.size} posts from SSR`);
+    log.log(`Facebook: ${postMap.size} posts from SSR`);
 
-    await scrollPage(page, postMap, state, { max, debug, onProgress: userProgress });
+    await scrollPage(page, postMap, state, { max, debug, onProgress: userProgress, logger });
   } finally {
     await page.close();
   }
@@ -576,16 +577,18 @@ export async function scrapeFacebook(targets, opts = {}) {
     debug        = false,
     resetSession = false,
     sessionDir   = DEFAULT_SESSION_DIR,
+    logger: rawLogger = null,
     ...userOpts
   } = opts;
+  const log = createLogger(rawLogger);
 
-  if (resetSession) clearSession(sessionDir);
+  if (resetSession) clearSessionState(sessionDir);
 
-  if (!sessionExists(sessionDir) && !headed) {
+  if (!hasSavedSession(sessionDir) && !headed) {
     throw new Error('No saved session. Call scrapeFacebook() with headed: true to log in first.');
   }
 
-  const context = await createBrowser(sessionDir, {
+  const context = await launchSessionContext(sessionDir, {
     headless: !headed,
     viewport: DESKTOP_VIEWPORT,
   });
@@ -600,21 +603,24 @@ export async function scrapeFacebook(targets, opts = {}) {
     const loggedIn = await isLoggedInFacebook(checkPage);
     if (!loggedIn) {
       if (headed) {
-        const ok = await waitForFacebookLogin(checkPage);
+        const ok = await waitForFacebookLogin(checkPage, log);
         if (!ok) throw new Error('Login timed out.');
-        console.log('\nLogin confirmed. Starting scrape...');
+        log.log('Login confirmed. Starting scrape...');
       } else {
         await context.close();
         throw new Error('Session expired. Call scrapeFacebook() with headed: true to re-login.');
       }
     } else {
-      console.log('Session active.');
+      log.log('Session active.');
     }
+    // Persist cookies + localStorage so the next launch is logged in (the
+    // isolated context has no profile to write them back to automatically).
+    await saveSessionState(context, sessionDir);
     await checkPage.close();
 
     const results = {};
     for (const target of list) {
-      results[target] = await scrapeFacebookUser(target, context, userOpts);
+      results[target] = await scrapeFacebookUser(target, context, { ...userOpts, logger: rawLogger });
     }
     return results;
   } finally {

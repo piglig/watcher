@@ -9,6 +9,7 @@ import { resolve }           from 'path';
 import { waitForLoginSignal } from '../../shared/login-signal.js';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { launchPersistentContext } from 'cloakbrowser';
+import { createLogger }      from '../../shared/logger.js';
 
 export const DEFAULT_SESSION_DIR = resolve('sessions/naver');
 
@@ -71,11 +72,9 @@ async function isLoggedIn(page) {
   } catch { return false; }
 }
 
-async function waitForLogin(page) {
-  console.log('\nNot logged in. Please log in to Naver in the browser window.');
-  console.log('─'.repeat(50));
-  console.log('  After login completes → press Enter here to confirm');
-  console.log('─'.repeat(50));
+async function waitForLogin(page, log) {
+  log.log('Not logged in. Please log in to Naver in the browser window.');
+  log.log('  After login completes → press Enter here to confirm');
 
   return Promise.race([
     (async () => {
@@ -165,7 +164,7 @@ async function extractClubIdFromDOM(page) {
 
 // ── Phase 2: article detail fetch ────────────────────────────────────────────
 
-async function fetchArticleDetails(cafeId, idEntries, likeMap, dbg) {
+async function fetchArticleDetails(cafeId, idEntries, likeMap, dbg, log = createLogger()) {
   const results = [];
   for (let i = 0; i < idEntries.length; i += BATCH_SIZE) {
     const batch = idEntries.slice(i, i + BATCH_SIZE);
@@ -181,7 +180,7 @@ async function fetchArticleDetails(cafeId, idEntries, likeMap, dbg) {
       if (r.status === 'fulfilled' && r.value) results.push(r.value);
     }
     if (i + BATCH_SIZE < idEntries.length) await delay(BATCH_DELAY);
-    console.log(`Fetching details: ${Math.min(i + BATCH_SIZE, idEntries.length)}/${idEntries.length}`);
+    log.log(`Fetching details: ${Math.min(i + BATCH_SIZE, idEntries.length)}/${idEntries.length}`);
   }
   return results;
 }
@@ -253,8 +252,9 @@ function buildFilter(opts = {}) {
 // ── Per-café scrape ───────────────────────────────────────────────────────────
 
 export async function scrapeNaverCafe(target, page, opts = {}) {
-  const { max = 1000, debug = false, ...filterOpts } = opts;
-  const dbg      = (...m) => debug && console.log('[DBG]', ...m);
+  const { max = 1000, debug = false, logger = null, ...filterOpts } = opts;
+  const log      = createLogger(logger);
+  const dbg      = (...m) => debug && log.log('[DBG]', ...m);
   const filterFn = buildFilter(filterOpts);
 
   let clubId      = null;
@@ -309,18 +309,18 @@ export async function scrapeNaverCafe(target, page, opts = {}) {
       dbg(`clubId from DOM: ${clubId}`);
     }
     if (!clubId) {
-      console.error('[ERROR] Could not determine café ID.');
+      log.error('[ERROR] Could not determine café ID.');
       return { posts: [], memberCount: null };
     }
 
-    console.log(`  clubId      : ${clubId}`);
-    if (memberCount !== null) console.log(`  Members     : ${memberCount.toLocaleString()}`);
+    log.log(`  clubId      : ${clubId}`);
+    if (memberCount !== null) log.log(`  Members     : ${memberCount.toLocaleString()}`);
 
     const boards = target.menuId
       ? [{ id: target.menuId, name: '(specified)' }]
       : (menuList?.length ? menuList : [{ id: '0', name: 'All' }]);
 
-    console.log(`  Boards      : ${boards.length}`);
+    log.log(`  Boards      : ${boards.length}`);
 
     for (const board of boards) {
       if (idSet.size >= max) break;
@@ -342,7 +342,7 @@ export async function scrapeNaverCafe(target, page, opts = {}) {
           `https://cafe.naver.com/${target.slug}` +
           `?iframe_url=${encodeURIComponent(iframePath)}`;
 
-        console.log(`Board "${board.name}" — page ${pageNum} (${idSet.size} IDs)`);
+        log.log(`Board "${board.name}" — page ${pageNum} (${idSet.size} IDs)`);
 
         await page.goto(listUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
         await delay(NAV_DELAY);
@@ -365,9 +365,9 @@ export async function scrapeNaverCafe(target, page, opts = {}) {
   if (!cappedIds.length) return { posts: [], memberCount };
 
   // ── Phase 2: fetch article details ───────────────────────────────────────
-  console.log(`  Fetching ${cappedIds.length} article details...`);
+  log.log(`  Fetching ${cappedIds.length} article details...`);
   const idEntries = cappedIds.map(id => ({ id }));
-  const details   = await fetchArticleDetails(clubId, idEntries, likeMap, dbg);
+  const details   = await fetchArticleDetails(clubId, idEntries, likeMap, dbg, log);
 
   const posts = [];
   for (const result of details) {
@@ -394,8 +394,10 @@ export async function scrapeNaver(targets, opts = {}) {
     debug        = false,
     resetSession = false,
     sessionDir   = DEFAULT_SESSION_DIR,
+    logger: rawLogger = null,
     ...cafeOpts
   } = opts;
+  const log = createLogger(rawLogger);
 
   if (resetSession && existsSync(sessionDir))
     rmSync(sessionDir, { recursive: true, force: true });
@@ -415,21 +417,19 @@ export async function scrapeNaver(targets, opts = {}) {
         await context.close();
         throw new Error('Session expired. Run with --headed to re-login.');
       }
-      const ok = await waitForLogin(loginPage);
+      const ok = await waitForLogin(loginPage, log);
       if (!ok) throw new Error('Login timed out.');
-      console.log('\nLogin confirmed. Starting scrape...');
+      log.log('Login confirmed. Starting scrape...');
     } else {
-      console.log('Session active.');
+      log.log('Session active.');
     }
     await loginPage.close();
 
     const page    = await setupPage(context);
     const results = {};
     for (const target of parsed) {
-      console.log(`\n${'═'.repeat(52)}`);
-      console.log(`  ${target.slug}  [Naver Café]`);
-      console.log(`${'═'.repeat(52)}`);
-      results[target.slug] = await scrapeNaverCafe(target, page, { debug, ...cafeOpts });
+      log.log(`${target.slug}  [Naver Café]`);
+      results[target.slug] = await scrapeNaverCafe(target, page, { debug, logger: rawLogger, ...cafeOpts });
     }
     return results;
   } finally {

@@ -17,12 +17,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
 import StepBar from '../components/StepBar.js';
-import LogPanel from '../components/LogPanel.js';
+import StaticLog from '../components/StaticLog.js';
 import StatusPanel from '../components/StatusPanel.js';
+import ElapsedTimer from '../components/ElapsedTimer.js';
 import { SYM } from '../theme.js';
-import { useElapsed } from '../hooks/useElapsed.js';
-import { useConsoleCapture } from '../hooks/useConsoleCapture.js';
-import { runScrape } from '../runner.js';
+import { parseLogLine } from '../parseLogLine.js';
+import { runScrape } from '../../platforms/run.js';
 import { getConfig } from '../../shared/config-store.js';
 import { confirmLogin, isLoginPending } from '../../shared/login-signal.js';
 import { createSession, SESSION_STATE } from '../../shared/sessions-store.js';
@@ -33,11 +33,10 @@ import SessionView from '../components/SessionView.js';
 import { join, resolve } from 'path';
 
 const STAGE_ORDER = ['采集', 'AI 分析', '结论'];
-const LOG_LIMIT   = 14;
 
 export default function PipelineRun({ config, onNav, sessionId: initialSessionId }) {
   const [phase, setPhase]               = useState(initialSessionId ? 'view' : 'scraping');
-  const [logs, setLogs]                 = useState([]);
+  const [logEntries, setLogEntries]     = useState([]);
   const [scrapeResult, setScrapeResult] = useState(null);
   const [sessionId, setSessionId]       = useState(initialSessionId ?? null);
   const [errorMsg, setErrorMsg]         = useState('');
@@ -45,22 +44,19 @@ export default function PipelineRun({ config, onNav, sessionId: initialSessionId
 
   const launched   = useRef(false);
   const startedAt  = useRef(Date.now());
-  const elapsed    = useElapsed(phase === 'scraping');
+  const seq        = useRef(0);
 
   const session = useSession(sessionId);
 
-  // Stamped logger for scrape phase
+  // Stamped logger for scrape phase — parse once, append-only into <Static>.
   const stampedLog = (line) => {
     const dt = Math.floor((Date.now() - startedAt.current) / 1000);
     const mm = String(Math.floor(dt / 60)).padStart(2, '0');
     const ss = String(dt % 60).padStart(2, '0');
-    setLogs(prev => [...prev.slice(-(LOG_LIMIT - 1)), `T+${mm}:${ss} ${line}`]);
-  };
-
-  useConsoleCapture((lines) => {
-    for (const line of lines) stampedLog(line);
+    const rec = { id: seq.current++, ...parseLogLine(`T+${mm}:${ss} ${line}`) };
+    setLogEntries(prev => prev.concat(rec));
     setLoginPending(isLoginPending());
-  }, { enabled: phase === 'scraping' });
+  };
 
   const outDir  = config?.[0]?.outDir ?? './out/';
   const saved   = getConfig();
@@ -132,14 +128,14 @@ export default function PipelineRun({ config, onNav, sessionId: initialSessionId
         <StatusPanel
           color={color}
           label={label}
-          elapsed={phase === 'scraping' ? elapsed : undefined}
+          headerRight={phase === 'scraping' ? <ElapsedTimer active /> : null}
         >
           {loginPending && phase === 'scraping' && (
             <Text bold color="yellow">{SYM.warn} 浏览器已打开，请完成登录后按 Enter 确认</Text>
           )}
         </StatusPanel>
 
-        <LogPanel logs={logs} limit={LOG_LIMIT} />
+        <StaticLog entries={logEntries} />
 
         {errorMsg && (
           <Box borderStyle="round" borderColor="red" paddingX={2}>

@@ -12,9 +12,10 @@
 import { resolve }             from 'path';
 import { waitForLoginSignal }   from '../../shared/login-signal.js';
 import {
-  createBrowser,
-  clearSession, sessionExists,
+  launchSessionContext, saveSessionState,
+  hasSavedSession, clearSessionState,
 }                              from '../../shared/browser.js';
+import { createLogger }        from '../../shared/logger.js';
 
 export const DEFAULT_SESSION_DIR = resolve('sessions/pixiv');
 
@@ -78,11 +79,9 @@ export async function isLoggedInPixiv(page) {
   }
 }
 
-async function waitForPixivLogin(page) {
-  console.log('\nNot logged in. Please log in to Pixiv in the browser window.');
-  console.log('─'.repeat(50));
-  console.log('  After login completes →press Enter here to confirm');
-  console.log('─'.repeat(50));
+async function waitForPixivLogin(page, log) {
+  log.log('Not logged in. Please log in to Pixiv in the browser window.');
+  log.log('  After login completes →press Enter here to confirm');
 
   return new Promise(resolve => {
     let done = false;
@@ -190,11 +189,10 @@ function buildFilter(opts = {}) {
  */
 export async function scrapePixivUser(userId, page, opts = {}) {
   const { max = 1000, debug = false, ...filterOpts } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const log = createLogger(opts.logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  User ${userId}  [Pixiv]`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`User ${userId} [Pixiv]`);
 
   // Navigate to the user's profile to establish the correct API context.
   await page.goto(`https://www.pixiv.net/en/users/${userId}`, {
@@ -207,10 +205,10 @@ export async function scrapePixivUser(userId, page, opts = {}) {
   try {
     userInfo = await pixivGet(page, `https://www.pixiv.net/ajax/user/${userId}?lang=en`);
   } catch (e) {
-    console.error(`[ERROR] User ${userId} not found or inaccessible: ${e.message}`);
+    log.error(`[ERROR] User ${userId} not found or inaccessible: ${e.message}`);
     return [];
   }
-  console.log(`  ${userInfo.name ?? ''} (@${userInfo.account ?? userId})`);
+  log.log(`  ${userInfo.name ?? ''} (@${userInfo.account ?? userId})`);
 
   // Fetch all artwork IDs from profile
   let allIds;
@@ -221,10 +219,10 @@ export async function scrapePixivUser(userId, page, opts = {}) {
       ...Object.keys(profile.manga   ?? {}),
     ];
   } catch (e) {
-    console.error(`[ERROR] Could not fetch artwork list: ${e.message}`);
+    log.error(`[ERROR] Could not fetch artwork list: ${e.message}`);
     return [];
   }
-  console.log(`  ${allIds.length} artworks found`);
+  log.log(`  ${allIds.length} artworks found`);
 
   if (!allIds.length) return [];
 
@@ -235,7 +233,7 @@ export async function scrapePixivUser(userId, page, opts = {}) {
 
   for (let i = 0; i < limit; i += BATCH_SIZE) {
     const batch = allIds.slice(i, Math.min(i + BATCH_SIZE, limit));
-    console.log(`Fetching artworks: ${Math.min(i + batch.length, limit)}/${limit}`);
+    log.log(`Fetching artworks: ${Math.min(i + batch.length, limit)}/${limit}`);
 
     // Fetch BATCH_SIZE artworks concurrently inside the browser context
     const works = await page.evaluate(async (ids) => {
@@ -285,14 +283,15 @@ export async function scrapePixiv(targets, opts = {}) {
     sessionDir   = DEFAULT_SESSION_DIR,
     ...userOpts
   } = opts;
+  const log = createLogger(opts.logger);
 
-  if (resetSession) clearSession(sessionDir);
+  if (resetSession) clearSessionState(sessionDir);
 
-  if (!sessionExists(sessionDir) && !headed) {
+  if (!hasSavedSession(sessionDir) && !headed) {
     throw new Error('No saved session. Call scrapePixiv() with headed: true to log in first.');
   }
 
-  const context = await createBrowser(sessionDir, { headless: !headed });
+  const context = await launchSessionContext(sessionDir, { headless: !headed });
 
   try {
     // Login check / login flow: no resource blocking so CAPTCHA renders correctly.
@@ -305,16 +304,19 @@ export async function scrapePixiv(targets, opts = {}) {
     const loggedIn = await isLoggedInPixiv(loginPage);
     if (!loggedIn) {
       if (headed) {
-        const ok = await waitForPixivLogin(loginPage);
+        const ok = await waitForPixivLogin(loginPage, log);
         if (!ok) throw new Error('Login timed out.');
-        console.log('\nLogin confirmed. Starting scrape...');
+        log.log('Login confirmed. Starting scrape...');
       } else {
         await context.close();
         throw new Error('Session expired. Call scrapePixiv() with headed: true to re-login.');
       }
     } else {
-      console.log('Session active.');
+      log.log('Session active.');
     }
+    // Persist cookies + localStorage so the next launch is logged in (the
+    // isolated context has no profile to write them back to automatically).
+    await saveSessionState(context, sessionDir);
     await loginPage.close();
 
     // Scraping page: block images/media since we only need API responses.

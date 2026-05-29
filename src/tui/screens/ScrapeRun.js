@@ -1,34 +1,34 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
-import LogPanel from '../components/LogPanel.js';
+import StaticLog from '../components/StaticLog.js';
 import StatusPanel from '../components/StatusPanel.js';
+import ElapsedTimer from '../components/ElapsedTimer.js';
 import { SYM } from '../theme.js';
-import { useElapsed } from '../hooks/useElapsed.js';
-import { useConsoleCapture } from '../hooks/useConsoleCapture.js';
-import { runScrape } from '../runner.js';
+import { parseLogLine } from '../parseLogLine.js';
+import { runScrape } from '../../platforms/run.js';
 import { getConfig } from '../../shared/config-store.js';
 import { defaultModelForProvider, inferProvider } from '../../classifier/classifier.js';
 import { confirmLogin, isLoginPending } from '../../shared/login-signal.js';
 import { enrichFromScrapedProfiles, discoveriesToPlatformConfigs } from '../../osint/index.js';
 import { kolDir } from '../../shared/paths.js';
 
-const RECENT_LINES = 14;
-
 export default function ScrapeRun({ config, onNav }) {
-  const [recentLogs, setRecentLogs]   = useState([]);
+  const [logEntries, setLogEntries]   = useState([]);
   const [status, setStatus]           = useState('running');
   const [result, setResult]           = useState(null);
   const [errorMsg, setError]          = useState('');
   const [loginPending, setLoginPending] = useState(false);
 
   const launched  = useRef(false);
-  const elapsed   = useElapsed(status === 'running');
+  const seq       = useRef(0);
 
-  useConsoleCapture((lines) => {
-    setRecentLogs(prev => [...prev, ...lines].slice(-RECENT_LINES));
-    setLoginPending(isLoginPending());
-  }, { enabled: status === 'running' });
+  // Append-only: parse each raw line once, then concat. Never slice — <Static>
+  // dedups by index and old lines live in scrollback at zero re-render cost.
+  const pushLogs = useCallback((rawLines) => {
+    setLogEntries(prev =>
+      prev.concat(rawLines.map(r => ({ id: seq.current++, ...parseLogLine(r) }))));
+  }, []);
 
   useInput((input, key) => {
     if (key.escape && status !== 'running') { onNav('menu'); return; }
@@ -67,7 +67,8 @@ export default function ScrapeRun({ config, onNav }) {
     let cancelled = false;
     const onLog = (line) => {
       const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-      setRecentLogs(prev => [...prev, `[${ts}] ${line}`].slice(-RECENT_LINES));
+      pushLogs([`[${ts}] ${line}`]);
+      setLoginPending(isLoginPending());
     };
 
     runScrape(config, onLog)
@@ -131,7 +132,7 @@ export default function ScrapeRun({ config, onNav }) {
       <StatusPanel
         color={statusColor}
         label={statusLabel}
-        elapsed={status === 'running' ? elapsed : undefined}
+        headerRight={status === 'running' ? <ElapsedTimer active /> : null}
         error={status === 'error' ? errorMsg : undefined}
       >
         {status === 'running' && loginPending && (
@@ -139,9 +140,9 @@ export default function ScrapeRun({ config, onNav }) {
         )}
       </StatusPanel>
 
-      {/* ── Log panel — visible during run AND after completion so users can
-            inspect what the scraper actually did (esp. when totalCount=0). ── */}
-      <LogPanel logs={recentLogs} limit={RECENT_LINES} emptyText="正在启动…" />
+      {/* ── Log stream — append-only into scrollback so old lines never
+            re-render. Stays visible after completion for inspection. ── */}
+      <StaticLog entries={logEntries} />
 
       {/* ── Result panel ── */}
       {status === 'done' && result && (

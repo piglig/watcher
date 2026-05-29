@@ -23,23 +23,49 @@ import {
 } from '../osint/index.js';
 import { writeResults as writeOsintResults } from '../osint/output.js';
 
-import { runScrape } from '../tui/runner.js';
+import { runScrape } from '../platforms/run.js';
 import { createSession, getSession } from '../shared/sessions-store.js';
 import { advanceSession } from '../classifier/session.js';
 import { defaultModelForProvider, envNameForProvider, inferProvider } from '../classifier/classifier.js';
+import { getConfig } from '../shared/config-store.js';
 import { renderReport } from './report.js';
 import {
   kolDir, accountsDir, identityFile, osintStagingDir, ensureDir, pathSafe,
 } from '../shared/paths.js';
+import { createLogger } from '../shared/logger.js';
 import {
   createWorkflow,
   newWorkflowId,
   updateWorkflow,
   updateStage,
   getWorkflow,
+  listActiveWorkflows,
   WORKFLOW_STATE,
 } from './store.js';
 import { SESSION_STATE } from '../shared/sessions-store.js';
+
+/**
+ * Build scrape + classify options from saved config — the single source of
+ * truth shared by the WorkflowRun screen and the background daemon, so a
+ * batch-driven scrape uses exactly the same settings as an interactive one.
+ *
+ * scrapeMax left blank = full pull; 1e6 dwarfs any platform's natural API
+ * ceiling, letting each scraper exhaust on its own.
+ */
+export function buildWorkflowScrapeOpts() {
+  const saved = getConfig();
+  const configuredMax    = (saved.scrapeMax || '').trim();
+  const classifyProvider = inferProvider(saved.model, saved.aiProvider);
+  return {
+    max:             configuredMax || '1000000',
+    since:           '',
+    until:           '',
+    headed:          false,
+    redditSource:    'arctic',
+    classifyProvider,
+    classifyModel:   saved.model || defaultModelForProvider(classifyProvider),
+  };
+}
 
 // ── 1. Start ───────────────────────────────────────────────────────────────────
 
@@ -109,7 +135,8 @@ export async function startWorkflows(kols, { outBaseDir }) {
  * Other workflows pointing at the same batch_id advance independently when
  * the user invokes tryAdvanceOsint on them — they each filter by their slug.
  */
-export async function tryAdvanceOsint(workflowId) {
+export async function tryAdvanceOsint(workflowId, { logger = null } = {}) {
+  const log = createLogger(logger);
   const wf = getWorkflow(workflowId);
   if (!wf) throw new Error(`Workflow ${workflowId} not found`);
   if (wf.state !== WORKFLOW_STATE.OSINT_PENDING) return { state: wf.state };
@@ -175,7 +202,7 @@ export async function tryAdvanceOsint(workflowId) {
       }
     } catch (e) {
       // Bio enrichment is best-effort — never block OSINT completion on it.
-      console.warn(`[bio-enrich] ${wf.kol_id}: ${e.message ?? e}`);
+      log.warn(`[bio-enrich] ${wf.kol_id}: ${e.message ?? e}`);
     }
 
     writeFileSync(join(accDir, 'identity.json'), JSON.stringify(identity, null, 2), 'utf-8');
@@ -382,4 +409,85 @@ export async function finalizeWorkflowFromSession(session) {
   updateWorkflow(session.workflow_id, { state: WORKFLOW_STATE.REPORT_DONE });
 
   return { state: WORKFLOW_STATE.REPORT_DONE, reportPath };
+}
+
+// ── Background driver ───────────────────────────────────────────────────────
+//
+// One workflow stage at a time, process-wide — no concurrency. A single `busy`
+// mutex serializes ALL heavy workflow work (OSINT retrieval + scrape), shared
+// by the daemon's queue worker and the WorkflowRun screen's manual scrape, so
+// two of them can never run at once. The daemon kicks the worker WITHOUT
+// awaiting it, so a long scrape never blocks the daemon tick (which still
+// advances classify sessions + polls OSINT batches meanwhile).
+
+let busy = false;
+
+/** True while a workflow OSINT/scrape stage is running in this process. */
+export function isWorkflowBusy() {
+  return busy;
+}
+
+/**
+ * Sequential queue worker. Walks a snapshot of active workflows once, advancing
+ * each by AT MOST one stage:
+ *   osint_pending → tryAdvanceOsint        → osint_done
+ *   osint_done    → runScrapeAndSubmitClassify → classify_pending (+ session)
+ * then exits; the daemon re-kicks it each tick to carry workflows further. We
+ * deliberately don't loop-until-drained: tryAdvanceOsint returns `osint_pending`
+ * unchanged while the OSINT batch is still running, so re-finding pending
+ * workflows in a tight loop would spin. One stage per workflow per tick is the
+ * natural, terminating cadence. From classify_pending onward the workflow-bound
+ * classify session is advanced by the existing session daemon.
+ *
+ * A second call while one is running is a no-op (the `busy` mutex) — this is
+ * what keeps execution strictly sequential, one KOL/stage at a time.
+ */
+export async function runWorkflowQueue({ onLog = () => {} } = {}) {
+  if (busy) return;
+  busy = true;
+  try {
+    // Recover workflows stranded in `scraping` by a process that died
+    // mid-scrape. Safe here: `busy` guarantees no scrape is live right now.
+    for (const w of listActiveWorkflows()) {
+      if (w.state === WORKFLOW_STATE.SCRAPING) {
+        updateWorkflow(w.id, { state: WORKFLOW_STATE.OSINT_DONE });
+      }
+    }
+    for (const w of listActiveWorkflows()) {
+      if (w.state !== WORKFLOW_STATE.OSINT_PENDING && w.state !== WORKFLOW_STATE.OSINT_DONE) continue;
+      try {
+        if (w.state === WORKFLOW_STATE.OSINT_PENDING) {
+          await tryAdvanceOsint(w.id);
+        } else {
+          await runScrapeAndSubmitClassify(w.id, buildWorkflowScrapeOpts(), onLog);
+        }
+      } catch (e) {
+        // Record the failure and move on, so one bad KOL doesn't wedge the
+        // queue. tryAdvanceOsint / runScrapeAndSubmitClassify already set ERROR
+        // for their known cases; this catches the rest.
+        updateWorkflow(w.id, { state: WORKFLOW_STATE.ERROR, error: `${e.message ?? e}` });
+      }
+    }
+  } finally {
+    busy = false;
+  }
+}
+
+/**
+ * Run one workflow's scrape stage interactively (WorkflowRun screen) with live
+ * logs, sharing the same `busy` mutex as the queue worker so it never overlaps
+ * background work. Throws if something else is already running — the caller can
+ * surface that and rely on the background queue to pick the workflow up.
+ *
+ * @param {string} workflowId
+ * @param {{ onLog?: (line:string)=>void }} [opts]
+ */
+export async function runWorkflowScrape(workflowId, { onLog = () => {} } = {}) {
+  if (busy) throw new Error('已有任务在执行，采集将由后台队列依次处理');
+  busy = true;
+  try {
+    return await runScrapeAndSubmitClassify(workflowId, buildWorkflowScrapeOpts(), onLog);
+  } finally {
+    busy = false;
+  }
 }

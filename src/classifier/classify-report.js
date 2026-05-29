@@ -12,6 +12,7 @@
 
 import { CATEGORIES } from './classifier.js';
 import { pathSafe } from '../shared/paths.js';
+import { escapeHtml as esc, mdEscape as mdEsc } from '../shared/report-kit.js';
 
 const CATEGORY_LABELS = {
   religion:            '宗教',
@@ -37,16 +38,6 @@ const RISK_LABELS_ZH = {
   medium:   '中',
   low:      '低',
 };
-
-function esc(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-function mdEsc(s) {
-  return String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
-}
 
 function categoryBar(value, max = 3, width = 20) {
   const filled = Math.round((value / max) * width);

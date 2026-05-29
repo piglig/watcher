@@ -4,6 +4,8 @@
  * 将监听器挂在 page 上，把解析结果写入共享的 tweetMap
  */
 
+import { createLogger } from '../../shared/logger.js';
+
 /**
  * P0: Schema validation
  * Returns a diagnostic object so callers can decide how to respond.
@@ -143,8 +145,9 @@ export function extractFromGraphQL(json) {
  * @param {object} opts         - { debug, dumpOnce }
  */
 export function attachInterceptor(page, tweetMap, state, opts = {}) {
-  const { debug = false } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const { debug = false, logger = null } = opts;
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   page.on('response', async response => {
     const url    = response.url();
@@ -154,7 +157,7 @@ export function attachInterceptor(page, tweetMap, state, opts = {}) {
     if (status === 429) {
       const retryAfter = parseInt(response.headers()['retry-after'] ?? '60', 10);
       state.rateLimitUntil = Date.now() + retryAfter * 1000;
-      console.warn(`[WARN] Rate limit — pausing ${retryAfter}s...`);
+      log.warn(`Rate limit — pausing ${retryAfter}s...`);
       return;
     }
 
@@ -185,9 +188,9 @@ export function attachInterceptor(page, tweetMap, state, opts = {}) {
         state.emptyResponseCount = (state.emptyResponseCount ?? 0) + 1;
         if (!state.schemaWarned) {
           state.schemaWarned = true;
-          console.warn(`\n[WARN] GraphQL schema issue: ${reason}`);
+          log.warn(`GraphQL schema issue: ${reason}`);
           if (state.emptyResponseCount >= 3) {
-            console.error('[ERROR] 3 consecutive invalid responses — session may have expired.');
+            log.error('3 consecutive invalid responses — session may have expired.');
             state.sessionExpired = true;
           }
         }

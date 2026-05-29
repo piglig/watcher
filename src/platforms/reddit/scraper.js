@@ -10,6 +10,7 @@
  */
 
 import pRetry from 'p-retry';
+import { createLogger } from '../../shared/logger.js';
 
 const BASE       = 'https://www.reddit.com';
 const USER_AGENT = 'nodejs:twitter-scraper:1.0 (open-source scraper)';
@@ -19,7 +20,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
 
-async function redditFetch(path, params = {}) {
+async function redditFetch(path, params = {}, log = createLogger()) {
   const url = new URL(BASE + path);
   url.searchParams.set('raw_json', '1');
   for (const [k, v] of Object.entries(params)) {
@@ -31,7 +32,7 @@ async function redditFetch(path, params = {}) {
 
     if (res.status === 429) {
       const wait = parseInt(res.headers.get('retry-after') ?? '60', 10) * 1000;
-      console.warn(`[reddit] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
+      log.warn(`[reddit] 429 — waiting ${Math.ceil(wait / 1000)}s...`);
       await sleep(wait);
       throw new Error('reddit: 429 rate-limited');                       // → retry
     }
@@ -135,7 +136,9 @@ async function fetchListing(path, opts = {}) {
     earlyStop = () => false,
     debug     = false,
     label     = path,
+    logger    = null,
   } = opts;
+  const log = createLogger(logger);
 
   const items = [];
   let   after = null;
@@ -146,9 +149,9 @@ async function fetchListing(path, opts = {}) {
     const qp = { limit: Math.min(100, max - items.length + 20), ...params };
     if (after) qp.after = after;
 
-    if (debug) process.stdout.write(`\n[DBG] ${path} page=${page} after=${after ?? 'start'}`);
+    if (debug) log.write(`[DBG] ${path} page=${page} after=${after ?? 'start'}`);
 
-    const json = await redditFetch(path, qp);
+    const json = await redditFetch(path, qp, log);
     if (!json) break;
 
     const children = json?.data?.children ?? [];
@@ -163,10 +166,10 @@ async function fetchListing(path, opts = {}) {
       if (filter(item)) items.push(item);
     }
 
-    console.log(`[${label}] ${items.length} items (page ${page})`);
+    log.log(`[${label}] ${items.length} items (page ${page})`);
 
     if (earlyStop(batch)) {
-      console.log(`\n  [${label}] Date cutoff reached — stopping early.`);
+      log.log(`[${label}] Date cutoff reached — stopping early.`);
       break;
     }
 
@@ -205,11 +208,11 @@ export async function fetchSubreddit(subreddit, opts = {}) {
     until     = null,
     keyword   = null,
     debug     = false,
+    logger    = null,
   } = opts;
+  const log = createLogger(logger);
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  r/${subreddit}  [sort: ${sort}${['top','controversial'].includes(sort) ? ` / ${timeframe}` : ''}]`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`r/${subreddit}  [sort: ${sort}${['top','controversial'].includes(sort) ? ` / ${timeframe}` : ''}]`);
 
   const sinceDate = since   ? new Date(since)           : null;
   const untilDate = until   ? new Date(until)           : null;
@@ -217,7 +220,7 @@ export async function fetchSubreddit(subreddit, opts = {}) {
   const params    = ['top', 'controversial'].includes(sort) ? { t: timeframe } : {};
 
   return fetchListing(`/r/${subreddit}/${sort}.json`, {
-    max, debug, params, parse: parsePost, label: `r/${subreddit}`,
+    max, debug, logger, params, parse: parsePost, label: `r/${subreddit}`,
     filter(item) {
       const d = new Date(item.created_at);
       if (sinceDate && d < sinceDate) return false;
@@ -259,11 +262,11 @@ export async function fetchUser(username, opts = {}) {
     until      = null,
     keyword    = null,
     debug      = false,
+    logger     = null,
   } = opts;
+  const log = createLogger(logger);
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  u/${username}`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`u/${username}`);
 
   const sinceDate = since   ? new Date(since)       : null;
   const untilDate = until   ? new Date(until)       : null;
@@ -288,9 +291,9 @@ export async function fetchUser(username, opts = {}) {
   const allItems = [];
 
   if (!noPosts) {
-    console.log('  → Posts...');
+    log.log('  → Posts...');
     const posts = await fetchListing(`/user/${username}/submitted.json`, {
-      max, debug, params, parse: parsePost, label: 'posts',
+      max, debug, logger, params, parse: parsePost, label: 'posts',
       filter: makeFilter(), earlyStop,
     });
     allItems.push(...posts);
@@ -298,9 +301,9 @@ export async function fetchUser(username, opts = {}) {
 
   if (!noComments) {
     if (!noPosts) await sleep(DELAY_MS);
-    console.log('  → Comments...');
+    log.log('  → Comments...');
     const comments = await fetchListing(`/user/${username}/comments.json`, {
-      max, debug, params, parse: parseComment, label: 'comments',
+      max, debug, logger, params, parse: parseComment, label: 'comments',
       filter: makeFilter(), earlyStop,
     });
     allItems.push(...comments);
@@ -323,6 +326,7 @@ export async function fetchUser(username, opts = {}) {
 export async function scrapeReddit(targets, opts = {}) {
   const list    = Array.isArray(targets) ? targets : [targets];
   const results = {};
+  const log     = createLogger(opts.logger);
 
   for (const target of list) {
     const rMatch = target.match(/^r\/(.+)/i);
@@ -333,7 +337,7 @@ export async function scrapeReddit(targets, opts = {}) {
     } else if (uMatch) {
       results[target] = await fetchUser(uMatch[1], opts);
     } else {
-      console.warn(`[WARN] Unrecognised target "${target}" — expected r/subreddit or u/username`);
+      log.warn(`Unrecognised target "${target}" — expected r/subreddit or u/username`);
     }
 
     // Polite delay between multiple targets

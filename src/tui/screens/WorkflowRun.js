@@ -2,22 +2,21 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
 import StepBar from '../components/StepBar.js';
-import LogPanel from '../components/LogPanel.js';
+import StaticLog from '../components/StaticLog.js';
+import ElapsedTimer from '../components/ElapsedTimer.js';
+import Countdown from '../components/Countdown.js';
 import { SYM } from '../theme.js';
-import { useElapsed } from '../hooks/useElapsed.js';
+import { parseLogLine } from '../parseLogLine.js';
 import {
   startWorkflows,
   tryAdvanceOsint,
-  runScrapeAndSubmitClassify,
+  runWorkflowScrape,
   tryAdvanceClassify,
   getWorkflow,
   STATE_LABELS,
   WORKFLOW_STATE,
 } from '../../workflow/index.js';
-import { getConfig } from '../../shared/config-store.js';
-import { defaultModelForProvider, inferProvider } from '../../classifier/classifier.js';
 
-const LOG_LIMIT = 14;
 const STAGE_ORDER = ['OSINT', '采集', '分类', '报告'];
 
 const STATE_TO_STAGE = {
@@ -34,30 +33,25 @@ const STATE_TO_STAGE = {
 const stateToStage = (state) => STATE_TO_STAGE[state] ?? 0;
 
 export default function WorkflowRun({ config, onNav }) {
-  const [logs, setLogs]           = useState([]);
+  const [logEntries, setLogEntries] = useState([]);
   const [wf, setWf]               = useState(null);
   const [busy, setBusy]           = useState(true);
   const [errorMsg, setErrorMsg]   = useState('');
-  const [countdown, setCountdown] = useState(null);
   const launched      = useRef(false);
-  const elapsed       = useElapsed(busy);
-  const cdIntervalRef = useRef(null);
   const startedAt     = useRef(Date.now());
+  const seq           = useRef(0);
 
   const log = (line) => {
     const dt    = Math.floor((Date.now() - startedAt.current) / 1000);
     const mm    = String(Math.floor(dt / 60)).padStart(2, '0');
     const ss    = String(dt % 60).padStart(2, '0');
-    const stamp = `T+${mm}:${ss}`;
-    setLogs(prev => [...prev.slice(-(LOG_LIMIT - 1)), `${stamp} ${line}`]);
+    const rec   = { id: seq.current++, ...parseLogLine(`T+${mm}:${ss} ${line}`) };
+    setLogEntries(prev => prev.concat(rec));
   };
 
   useInput((input, key) => {
     if (key.escape) {
-      if (cdIntervalRef.current) {
-        clearInterval(cdIntervalRef.current);
-        cdIntervalRef.current = null;
-      }
+      // <Countdown> clears its own interval on unmount, so nothing to tear down.
       onNav('menu');
       return;
     }
@@ -125,20 +119,7 @@ export default function WorkflowRun({ config, onNav }) {
     if (!wf) return;
     setBusy(true);
     try {
-      // scrapeMax 留空 = 全量；用 1e6 远超任何平台 API 自然上限，让 scraper 自然耗尽
-      const saved = getConfig();
-      const configuredMax = (saved.scrapeMax || '').trim();
-      const classifyProvider = inferProvider(saved.model, saved.aiProvider);
-      const opts = {
-        max:          configuredMax || '1000000',
-        since:        '',
-        until:        '',
-        headed:       false,
-        redditSource: 'arctic',
-        classifyProvider,
-        classifyModel:    saved.model || defaultModelForProvider(classifyProvider),
-      };
-      const res = await runScrapeAndSubmitClassify(wf.id, opts, log);
+      const res = await runWorkflowScrape(wf.id, { onLog: log });
       refreshWf(wf.id);
       if (res.state === WORKFLOW_STATE.CLASSIFY_PENDING) {
         log(`Classify session ${res.sessionId} 已创建 — daemon 在后台推进。`);
@@ -189,66 +170,24 @@ export default function WorkflowRun({ config, onNav }) {
     }
   }, []);
 
-  useEffect(() => {
-    if (cdIntervalRef.current) {
-      clearInterval(cdIntervalRef.current);
-      cdIntervalRef.current = null;
-    }
-    setCountdown(null);
-
-    if (busy || !wf) return;
-
-    if (wf.state === WORKFLOW_STATE.OSINT_PENDING) {
-      let cd = 30;
-      setCountdown(cd);
-      cdIntervalRef.current = setInterval(() => {
-        cd -= 1;
-        if (cd <= 0) {
-          clearInterval(cdIntervalRef.current);
-          cdIntervalRef.current = null;
-          setCountdown(null);
-          doAdvanceOsint();
-        } else {
-          setCountdown(cd);
-        }
-      }, 1000);
-    } else if (wf.state === WORKFLOW_STATE.OSINT_DONE) {
-      let cd = 3;
-      setCountdown(cd);
-      cdIntervalRef.current = setInterval(() => {
-        cd -= 1;
-        if (cd <= 0) {
-          clearInterval(cdIntervalRef.current);
-          cdIntervalRef.current = null;
-          setCountdown(null);
-          doScrape();
-        } else {
-          setCountdown(cd);
-        }
-      }, 1000);
-    } else if (wf.state === WORKFLOW_STATE.CLASSIFY_PENDING) {
-      let cd = 30;
-      setCountdown(cd);
-      cdIntervalRef.current = setInterval(() => {
-        cd -= 1;
-        if (cd <= 0) {
-          clearInterval(cdIntervalRef.current);
-          cdIntervalRef.current = null;
-          setCountdown(null);
-          doAdvanceClassify();
-        } else {
-          setCountdown(cd);
-        }
-      }, 1000);
-    }
-
-    return () => {
-      if (cdIntervalRef.current) {
-        clearInterval(cdIntervalRef.current);
-        cdIntervalRef.current = null;
-      }
-    };
-  }, [wf?.state, busy]);
+  // Auto-advance countdown spec, derived from the current wait state. The
+  // per-second tick lives inside <Countdown> (rendered below), so it re-renders
+  // only itself — not this whole screen. onExpire fires the same advance the
+  // old interval did, exactly once. No countdown while busy or in a non-wait
+  // state. The `key` forces a fresh <Countdown> (resetting its timer + fired
+  // latch) whenever the wait phase changes.
+  const countdownSpec = (!busy && wf) ? (
+    wf.state === WORKFLOW_STATE.OSINT_PENDING
+      ? { key: 'osint-pending', seconds: 30, onExpire: doAdvanceOsint,
+          text: (n) => `  下次自动检索：${n}s  [r 立即检索]` }
+    : wf.state === WORKFLOW_STATE.OSINT_DONE
+      ? { key: 'osint-done', seconds: 3, onExpire: doScrape,
+          text: (n) => `  即将自动开始采集…（${n}s）  [s 立即采集]` }
+    : wf.state === WORKFLOW_STATE.CLASSIFY_PENDING
+      ? { key: 'classify-pending', seconds: 30, onExpire: doAdvanceClassify,
+          text: (n) => `  下次自动检索：${n}s  [r 立即检索]` }
+    : null
+  ) : null;
 
   const stage = wf ? stateToStage(wf.state) : 0;
   const stateColor =
@@ -266,25 +205,24 @@ export default function WorkflowRun({ config, onNav }) {
           <Text bold color={stateColor}>
             {wf ? STATE_LABELS[wf.state] ?? wf.state : '初始化...'}
           </Text>
-          {busy && <Text color="gray" dimColor>{elapsed}s</Text>}
+          {busy && <ElapsedTimer active format="seconds" />}
         </Box>
         {wf && (
           <Text color="gray" dimColor>
             {wf.kol?.name}  ·  {wf.id}
           </Text>
         )}
-        {countdown !== null && !busy && wf?.state === WORKFLOW_STATE.OSINT_PENDING && (
-          <Text color="gray" dimColor>  下次自动检索：{countdown}s  [r 立即检索]</Text>
-        )}
-        {countdown !== null && !busy && wf?.state === WORKFLOW_STATE.OSINT_DONE && (
-          <Text color="gray" dimColor>  即将自动开始采集…（{countdown}s）  [s 立即采集]</Text>
-        )}
-        {countdown !== null && !busy && wf?.state === WORKFLOW_STATE.CLASSIFY_PENDING && (
-          <Text color="gray" dimColor>  下次自动检索：{countdown}s  [r 立即检索]</Text>
+        {countdownSpec && (
+          <Countdown
+            key={countdownSpec.key}
+            seconds={countdownSpec.seconds}
+            onExpire={countdownSpec.onExpire}
+            render={(n) => <Text color="gray" dimColor>{countdownSpec.text(n)}</Text>}
+          />
         )}
       </Box>
 
-      <LogPanel logs={logs} limit={LOG_LIMIT} />
+      <StaticLog entries={logEntries} />
 
       {errorMsg && (
         <Box borderStyle="round" borderColor="red" paddingX={2}>

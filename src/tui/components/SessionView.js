@@ -5,7 +5,7 @@
  * renders status / progress / logs / completion summary. No I/O, no polling.
  */
 
-import React from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { Box, Text } from 'ink';
 import { SYM, RISK_COLORS, RISK_LABELS } from '../theme.js';
 import LogPanel from './LogPanel.js';
@@ -89,8 +89,13 @@ export default function SessionView({ session, scrapeResult, emptyText = '加载
 
       {/* Error box */}
       {session.state === SESSION_STATE.ERROR && session.error && (
-        <Box borderStyle="round" borderColor="red" paddingX={2}>
+        <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={2}>
           <Text color="red">{SYM.cross} {session.error}</Text>
+          {(session.batch_ids?.length ?? 0) > 0 && (
+            <Text color="yellow" dimColor>
+              已提交 {session.batch_ids.length} 个批次 · 在任务列表（j）按 r 主动重试下载
+            </Text>
+          )}
         </Box>
       )}
 
@@ -109,6 +114,8 @@ export default function SessionView({ session, scrapeResult, emptyText = '加载
 
 const RISK_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 
+const getSlugKey = (it) => it.slug;
+
 // Pick the comprehensive 风险审查报告 from k.files (the primary clickable
 // target); fall back to whatever's first if labels change.
 function primaryReportFile(k) {
@@ -119,17 +126,54 @@ function primaryReportFile(k) {
 }
 
 function CompletionSummary({ session }) {
-  const sorted = [...(session.result_files ?? [])].sort((a, b) =>
-    (RISK_ORDER[a.risk_level] ?? 9) - (RISK_ORDER[b.risk_level] ?? 9)
-    || (b.risk_score ?? 0) - (a.risk_score ?? 0)
-  );
+  const sorted = useMemo(() => (
+    [...(session.result_files ?? [])].sort((a, b) =>
+      (RISK_ORDER[a.risk_level] ?? 9) - (RISK_ORDER[b.risk_level] ?? 9)
+      || (b.risk_score ?? 0) - (a.risk_score ?? 0)
+    )
+  ), [session.result_files]);
   const total = sorted.length;
   const flaggedTotal = session.summary?.flagged_total ?? 0;
   const totalPosts   = session.summary?.total_posts ?? 0;
+  // Error stats folded into the summary by session.js (computeErrorStats):
+  // requests that errored at the LLM, and posts that got no result at all.
+  const classifyFailed = session.summary?.classify_failed ?? 0;
+  const unclassified   = session.summary?.unclassified ?? 0;
+  const errSample      = session.summary?.error_sample ?? [];
 
   // Counts by level — quick at-a-glance risk distribution.
-  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
-  for (const k of sorted) counts[k.risk_level] = (counts[k.risk_level] ?? 0) + 1;
+  const counts = useMemo(() => {
+    const c = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const k of sorted) c[k.risk_level] = (c[k.risk_level] ?? 0) + 1;
+    return c;
+  }, [sorted]);
+
+  const getSearchText = useCallback((it) => `${it.name ?? ''} ${it.slug ?? ''}`, []);
+  const renderItem = useCallback((it, { selected }) => {
+    const reportFile = primaryReportFile(it);
+    const namePart = reportFile ? hyperlink(reportFile, it.name) : it.name;
+    return (
+      <Box gap={2}>
+        <Text color={RISK_COLORS[it.risk_level] ?? 'gray'}>
+          {selected ? SYM.cursor : SYM.dot}
+        </Text>
+        <Text color={RISK_COLORS[it.risk_level] ?? 'gray'} bold>
+          {(RISK_LABELS[it.risk_level] ?? '—').padEnd(4, ' ')}
+        </Text>
+        <Text color="white" bold={selected} wrap="truncate-end">
+          {namePart}
+        </Text>
+        <Text color="gray" dimColor>
+          {it.risk_score ?? 0} 分 · {it.flagged_count ?? 0} 标记 · {it.account_count ?? 0} 账号
+        </Text>
+      </Box>
+    );
+  }, []);
+  const onSelect = useCallback((it) => {
+    const f = primaryReportFile(it);
+    if (f) process.stdout.write(`\n${hyperlink(f, '→ ' + it.name)}\n`);
+  }, []);
+  const onCancel = useCallback(() => {}, []);
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={2} paddingY={0} gap={0}>
@@ -146,6 +190,13 @@ function CompletionSummary({ session }) {
         </Box>
       </Box>
 
+      {(classifyFailed > 0 || unclassified > 0) && (
+        <Text color="yellow" dimColor>
+          {SYM.warn} {classifyFailed} 条分类失败 · {unclassified} 条未分类
+          {errSample[0] ? `（示例：${errSample[0].code} ${String(errSample[0].message ?? '').slice(0, 80)}）` : ''}
+        </Text>
+      )}
+
       {total > 0 ? (
         <Box flexDirection="column" marginTop={1}>
           <Text color="gray" dimColor>
@@ -153,38 +204,11 @@ function CompletionSummary({ session }) {
           </Text>
           <PagedListPicker
             items={sorted}
-            getKey={(it) => it.slug}
-            getSearchText={(it) => `${it.name ?? ''} ${it.slug ?? ''}`}
-            renderItem={(it, { selected }) => {
-              const reportFile = primaryReportFile(it);
-              const namePart = reportFile ? hyperlink(reportFile, it.name) : it.name;
-              return (
-                <Box gap={2}>
-                  <Text color={RISK_COLORS[it.risk_level] ?? 'gray'}>
-                    {selected ? SYM.cursor : SYM.dot}
-                  </Text>
-                  <Text color={RISK_COLORS[it.risk_level] ?? 'gray'} bold>
-                    {(RISK_LABELS[it.risk_level] ?? '—').padEnd(4, ' ')}
-                  </Text>
-                  <Text color="white" bold={selected} wrap="truncate-end">
-                    {namePart}
-                  </Text>
-                  <Text color="gray" dimColor>
-                    {it.risk_score ?? 0} 分 · {it.flagged_count ?? 0} 标记 · {it.account_count ?? 0} 账号
-                  </Text>
-                </Box>
-              );
-            }}
-            onSelect={(it) => {
-              // Re-emit the hyperlink to nudge terminals that don't capture
-              // mouse clicks but do honor OSC 8 on echoed text. Best-effort —
-              // primary UX is direct click on the row's hyperlinked name.
-              const f = primaryReportFile(it);
-              if (f) process.stdout.write(`\n${hyperlink(f, '→ ' + it.name)}\n`);
-            }}
-            // ESC handler is required by the picker but we don't want to lose
-            // the completion view on a stray ESC — make it a no-op.
-            onCancel={() => {}}
+            getKey={getSlugKey}
+            getSearchText={getSearchText}
+            renderItem={renderItem}
+            onSelect={onSelect}
+            onCancel={onCancel}
             emptyText="无 KOL 报告"
             reservedLines={12}
           />

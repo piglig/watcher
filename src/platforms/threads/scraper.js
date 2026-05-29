@@ -10,9 +10,10 @@ import { resolve }                          from 'path';
 import { writeFileSync }                    from 'fs';
 import { waitForLoginSignal }               from '../../shared/login-signal.js';
 import {
-  createBrowser,
-  clearSession, sessionExists,
+  launchSessionContext, saveSessionState,
+  hasSavedSession, clearSessionState,
 }                                           from '../../shared/browser.js';
+import { createLogger }                     from '../../shared/logger.js';
 
 const DESKTOP_VIEWPORT = { width: 1280, height: 900 };
 
@@ -57,11 +58,9 @@ export async function isLoggedInThreads(page) {
   }
 }
 
-async function waitForThreadsLogin(page) {
-  console.log('\nNot logged in. Please log in to Threads in the browser window.');
-  console.log('─'.repeat(50));
-  console.log('  After login completes →press Enter here to confirm');
-  console.log('─'.repeat(50));
+async function waitForThreadsLogin(page, log) {
+  log.log('Not logged in. Please log in to Threads in the browser window.');
+  log.log('  After login completes →press Enter here to confirm');
 
   return new Promise(resolve => {
     let done = false;
@@ -182,7 +181,8 @@ async function extractSSRPosts(page) {
 
 export function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
   const { debug = false } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const log = createLogger(opts.logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   page.on('response', async response => {
     const url    = response.url();
@@ -190,7 +190,7 @@ export function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
 
     if (status === 429) {
       state.rateLimitUntil = Date.now() + 60_000;
-      console.warn('[WARN] Rate limit 429 — pausing 60s...');
+      log.warn('[WARN] Rate limit 429 — pausing 60s...');
       return;
     }
 
@@ -235,7 +235,8 @@ export function attachThreadsInterceptor(page, threadMap, state, opts = {}) {
 
 async function scrollPage(page, threadMap, state, opts = {}) {
   const { max = 200, debug = false } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const log = createLogger(opts.logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   let staleRounds = 0;
   let prevCount   = threadMap.size;
@@ -249,11 +250,11 @@ async function scrollPage(page, threadMap, state, opts = {}) {
 
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
-      console.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
+      log.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
       await page.waitForTimeout(pause);
     }
 
-    console.log(`Threads: ${threadMap.size} collected (scroll #${round})`);
+    log.log(`Threads: ${threadMap.size} collected (scroll #${round})`);
 
     // Simulate real mouse wheel —fires WheelEvent which React/IntersectionObserver
     // listens to. window.scrollTo() bypasses this and doesn't trigger infinite scroll.
@@ -314,17 +315,16 @@ function buildFilter(opts = {}) {
  */
 export async function scrapeThreadsUser(username, context, opts = {}) {
   const { max = 1000, debug = false, ...filterOpts } = opts;
+  const log = createLogger(opts.logger);
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  @${username}  [Threads]`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`@${username} [Threads]`);
 
   const threadMap = new Map();
   const state     = { rateLimitUntil: 0, dumpedOnce: false };
   const filterFn  = buildFilter(filterOpts);
   const page      = await setupDesktopPage(context);
 
-  attachThreadsInterceptor(page, threadMap, state, { debug });
+  attachThreadsInterceptor(page, threadMap, state, { debug, logger: opts.logger });
 
   try {
     await page.goto(`https://www.threads.com/@${username}`, {
@@ -335,7 +335,7 @@ export async function scrapeThreadsUser(username, context, opts = {}) {
     const bodyText = await page.evaluate(() => document.body.innerText);
     if (bodyText.toLowerCase().includes("this page isn't available") ||
         bodyText.toLowerCase().includes('page not found')) {
-      console.error(`[ERROR] @${username} not found or private.`);
+      log.error(`[ERROR] @${username} not found or private.`);
       return [];
     }
 
@@ -345,7 +345,7 @@ export async function scrapeThreadsUser(username, context, opts = {}) {
       if (!threadMap.has(t.id)) threadMap.set(t.id, t);
     }
 
-    await scrollPage(page, threadMap, state, { max, debug });
+    await scrollPage(page, threadMap, state, { max, debug, logger: opts.logger });
 
     // Scrape the Replies tab unless the caller explicitly excludes replies
     if (!filterOpts.noReplies && threadMap.size < max) {
@@ -359,7 +359,7 @@ export async function scrapeThreadsUser(username, context, opts = {}) {
         if (!threadMap.has(t.id)) threadMap.set(t.id, t);
       }
 
-      await scrollPage(page, threadMap, state, { max, debug });
+      await scrollPage(page, threadMap, state, { max, debug, logger: opts.logger });
     }
   } finally {
     await page.close();
@@ -413,14 +413,15 @@ export async function scrapeThreads(usernames, opts = {}) {
     sessionDir   = DEFAULT_SESSION_DIR,
     ...userOpts
   } = opts;
+  const log = createLogger(opts.logger);
 
-  if (resetSession) clearSession(sessionDir);
+  if (resetSession) clearSessionState(sessionDir);
 
-  if (!sessionExists(sessionDir) && !headed) {
+  if (!hasSavedSession(sessionDir) && !headed) {
     throw new Error('No saved session. Call scrapeThreads() with headed: true to log in first.');
   }
 
-  const context = await createBrowser(sessionDir, {
+  const context = await launchSessionContext(sessionDir, {
     headless: !headed,
     viewport: DESKTOP_VIEWPORT,
   });
@@ -435,16 +436,19 @@ export async function scrapeThreads(usernames, opts = {}) {
     const loggedIn = await isLoggedInThreads(checkPage);
     if (!loggedIn) {
       if (headed) {
-        const ok = await waitForThreadsLogin(checkPage);
+        const ok = await waitForThreadsLogin(checkPage, log);
         if (!ok) throw new Error('Login timed out.');
-        console.log('\nLogin confirmed. Starting scrape...');
+        log.log('Login confirmed. Starting scrape...');
       } else {
         await context.close();
         throw new Error('Session expired. Call scrapeThreads() with headed: true to re-login.');
       }
     } else {
-      console.log('Session active.');
+      log.log('Session active.');
     }
+    // Persist cookies + localStorage so the next launch is logged in (the
+    // isolated context has no profile to write them back to automatically).
+    await saveSessionState(context, sessionDir);
     await checkPage.close();
 
     const results = {};

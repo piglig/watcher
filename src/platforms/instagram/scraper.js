@@ -12,9 +12,10 @@
 import { resolve }                          from 'path';
 import { writeFileSync }                    from 'fs';
 import { waitForLoginSignal }               from '../../shared/login-signal.js';
+import { createLogger }                      from '../../shared/logger.js';
 import {
-  createBrowser,
-  clearSession, sessionExists,
+  launchSessionContext, saveSessionState,
+  hasSavedSession, clearSessionState,
 }                                           from '../../shared/browser.js';
 
 const DESKTOP_VIEWPORT = { width: 1280, height: 900 };
@@ -59,11 +60,9 @@ export async function isLoggedInInstagram(page) {
   }
 }
 
-async function waitForInstagramLogin(page) {
-  console.log('\nNot logged in. Please log in to Instagram in the browser window.');
-  console.log('─'.repeat(50));
-  console.log('  After login completes → press Enter here to confirm');
-  console.log('─'.repeat(50));
+async function waitForInstagramLogin(page, log = createLogger()) {
+  log.log('Not logged in. Please log in to Instagram in the browser window.');
+  log.log('  After login completes → press Enter here to confirm');
 
   return new Promise(resolve => {
     let done = false;
@@ -305,8 +304,9 @@ async function extractSSRPosts(page, state = null) {
 // ── Interceptor ───────────────────────────────────────────────────────────────
 
 export function attachInstagramInterceptor(page, postMap, state, opts = {}) {
-  const { debug = false } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const { debug = false, logger = null } = opts;
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   page.on('response', async response => {
     const url    = response.url();
@@ -314,7 +314,7 @@ export function attachInstagramInterceptor(page, postMap, state, opts = {}) {
 
     if (status === 429) {
       state.rateLimitUntil = Date.now() + 60_000;
-      console.warn('[WARN] Rate limit 429 — pausing 60s...');
+      log.warn('[WARN] Rate limit 429 — pausing 60s...');
       return;
     }
 
@@ -353,8 +353,9 @@ export function attachInstagramInterceptor(page, postMap, state, opts = {}) {
 // ── Scroll loop ───────────────────────────────────────────────────────────────
 
 async function scrollPage(page, postMap, state, opts = {}) {
-  const { max = 200, debug = false, onProgress = null } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const { max = 200, debug = false, onProgress = null, logger = null } = opts;
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   let staleRounds = 0;
   let prevCount   = postMap.size;
@@ -367,22 +368,22 @@ async function scrollPage(page, postMap, state, opts = {}) {
 
     // Early stop: Instagram signaled feed exhaustion or we reached the user's total post count
     if (state.feedExhausted) {
-      console.log(`Instagram: feed exhausted (has_next_page=false). Stopping at ${postMap.size}.`);
+      log.log(`Instagram: feed exhausted (has_next_page=false). Stopping at ${postMap.size}.`);
       break;
     }
     if (state.expectedTotal && postMap.size >= state.expectedTotal) {
-      console.log(`Instagram: reached profile total (${state.expectedTotal}). Stopping.`);
+      log.log(`Instagram: reached profile total (${state.expectedTotal}). Stopping.`);
       break;
     }
 
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
-      console.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
+      log.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
       await page.waitForTimeout(pause);
     }
 
     const totalHint = state.expectedTotal ? ` / ~${state.expectedTotal}` : '';
-    console.log(`Instagram: ${postMap.size}${totalHint} collected (scroll #${round})`);
+    log.log(`Instagram: ${postMap.size}${totalHint} collected (scroll #${round})`);
     if (onProgress) onProgress(postMap.size, state.expectedTotal);
 
     for (let i = 0; i < 15; i++) {
@@ -443,15 +444,15 @@ export async function scrapeInstagramUser(username, context, opts = {}) {
     debug       = false,
     reels       = true,   // also scrape /reels/ tab
     onProgress  = null,
+    logger      = null,
     ...filterOpts
   } = opts;
+  const log = createLogger(logger);
   const userProgress = onProgress
     ? (count, total) => onProgress(`@${username}: ${count}${total ? ` / ${total}` : ''} 条`)
     : null;
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  @${username}  [Instagram]`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`  @${username}  [Instagram]`);
 
   const postMap = new Map();
   const state   = {
@@ -469,7 +470,7 @@ export async function scrapeInstagramUser(username, context, opts = {}) {
   const filterFn = buildFilter(filterOpts);
   const page    = await setupDesktopPage(context);
 
-  attachInstagramInterceptor(page, postMap, state, { debug });
+  attachInstagramInterceptor(page, postMap, state, { debug, logger });
 
   try {
     await page.goto(`https://www.instagram.com/${username}/`, {
@@ -482,7 +483,7 @@ export async function scrapeInstagramUser(username, context, opts = {}) {
       bodyText.toLowerCase().includes("sorry, this page isn't available") ||
       bodyText.toLowerCase().includes('page not found')
     ) {
-      console.error(`[ERROR] @${username} not found or private.`);
+      log.error(`[ERROR] @${username} not found or private.`);
       return { profile: null, posts: [] };
     }
 
@@ -492,9 +493,9 @@ export async function scrapeInstagramUser(username, context, opts = {}) {
       if (!postMap.has(p.id)) postMap.set(p.id, p);
     }
     const totalHint = state.expectedTotal ? ` (profile has ${state.expectedTotal} total)` : '';
-    console.log(`Instagram: ${postMap.size} posts from SSR${totalHint}`);
+    log.log(`Instagram: ${postMap.size} posts from SSR${totalHint}`);
 
-    await scrollPage(page, postMap, state, { max, debug, onProgress: userProgress });
+    await scrollPage(page, postMap, state, { max, debug, onProgress: userProgress, logger });
 
     // Reels feed has its own pagination — reset exhaustion flag before scraping it
     if (reels && postMap.size < max && (!state.expectedTotal || postMap.size < state.expectedTotal)) {
@@ -509,7 +510,7 @@ export async function scrapeInstagramUser(username, context, opts = {}) {
         if (!postMap.has(p.id)) postMap.set(p.id, p);
       }
 
-      await scrollPage(page, postMap, state, { max, debug, onProgress: userProgress });
+      await scrollPage(page, postMap, state, { max, debug, onProgress: userProgress, logger });
     }
   } finally {
     await page.close();
@@ -608,16 +609,18 @@ export async function scrapeInstagram(usernames, opts = {}) {
     debug        = false,
     resetSession = false,
     sessionDir   = DEFAULT_SESSION_DIR,
+    logger: rawLogger = null,
     ...userOpts
   } = opts;
+  const log = createLogger(rawLogger);
 
-  if (resetSession) clearSession(sessionDir);
+  if (resetSession) clearSessionState(sessionDir);
 
-  if (!sessionExists(sessionDir) && !headed) {
+  if (!hasSavedSession(sessionDir) && !headed) {
     throw new Error('No saved session. Call scrapeInstagram() with headed: true to log in first.');
   }
 
-  const context = await createBrowser(sessionDir, {
+  const context = await launchSessionContext(sessionDir, {
     headless: !headed,
     viewport: DESKTOP_VIEWPORT,
   });
@@ -633,21 +636,24 @@ export async function scrapeInstagram(usernames, opts = {}) {
     const loggedIn = await isLoggedInInstagram(checkPage);
     if (!loggedIn) {
       if (headed) {
-        const ok = await waitForInstagramLogin(checkPage);
+        const ok = await waitForInstagramLogin(checkPage, log);
         if (!ok) throw new Error('Login timed out.');
-        console.log('\nLogin confirmed. Starting scrape...');
+        log.log('Login confirmed. Starting scrape...');
       } else {
         await context.close();
         throw new Error('Session expired. Call scrapeInstagram() with headed: true to re-login.');
       }
     } else {
-      console.log('Session active.');
+      log.log('Session active.');
     }
+    // Persist cookies + localStorage so the next launch is logged in (the
+    // isolated context has no profile to write them back to automatically).
+    await saveSessionState(context, sessionDir);
     await checkPage.close();
 
     const results = {};
     for (const username of names) {
-      results[username] = await scrapeInstagramUser(username, context, userOpts);
+      results[username] = await scrapeInstagramUser(username, context, { ...userOpts, logger: rawLogger });
     }
     return results;
   } finally {

@@ -4,7 +4,7 @@
 
 import { readFileSync, writeFileSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { h, htmlShell, copyButton } from '../shared/report-kit.js';
+import { h, htmlShell, copyButton, mdEscape } from '../shared/report-kit.js';
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -13,10 +13,6 @@ function safeReadJSON(path) {
   catch { return null; }
 }
 
-
-function mdEscape(s) {
-  return String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
-}
 
 const PLATFORM_LABELS = {
   twitter:   'Twitter / X',
@@ -499,8 +495,12 @@ function profileUrl(platform, username) {
 }
 
 function buildAccountsTable(rows, kolName) {
+  // Inline style="text-align:center" on 渠道 / 渠道账号 / 粉丝数 — Sheets/Excel
+  // strip external CSS on paste, so the alignment only carries through the
+  // clipboard if it's inline on each <th>/<td>.
+  const C = ' style="text-align:center"';
   const thead = `<thead><tr>
-    <th>KOL 名称</th><th>渠道</th><th>渠道账号</th><th>粉丝数</th>
+    <th>KOL 名称</th><th${C}>渠道</th><th${C}>渠道账号</th><th${C}>粉丝数</th>
     <th>风险评分</th><th>风险等级</th><th>是否违规</th><th>标记内容数</th><th>采集数</th>
     <th>主要话题</th><th>主要风险类别</th>
   </tr></thead>`;
@@ -524,9 +524,9 @@ function buildAccountsTable(rows, kolName) {
     const notScrapedNote = !r.scraped ? '<span class="badge badge-unscraped nocopy" title="OSINT 发现但未采集">未采集</span>' : '';
     return `<tr>
       ${kolCell}
-      <td>${h(r.platformLabel)}</td>
-      <td><a href="${h(profileUrl(r.platform, r.username))}" target="_blank">@${h(r.username)}</a> ${verifiedTag} ${notScrapedNote}</td>
-      <td class="num" data-value="${followersRaw}">${fmtNumber(r.followers)}</td>
+      <td${C}>${h(r.platformLabel)}</td>
+      <td${C}><a href="${h(profileUrl(r.platform, r.username))}" target="_blank">@${h(r.username)}</a> ${verifiedTag} ${notScrapedNote}</td>
+      <td class="num"${C} data-value="${followersRaw}">${fmtNumber(r.followers)}</td>
       <td class="num" data-value="${score ?? ''}">${scoreBar}</td>
       <td>${riskBadge(r.riskLevel)}</td>
       <td>${violationBadge(r.isViolation)}</td>

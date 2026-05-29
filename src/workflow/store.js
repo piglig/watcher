@@ -63,6 +63,18 @@ export function createWorkflow({ id, kolId, kolName, seedUrl, outDir }) {
 
 export function listWorkflows()    { return store.list(); }
 export function getWorkflow(id)    { return store.get(id); }
+
+/**
+ * Workflows that still need driving — everything except the two terminal
+ * states. The App-level daemon walks these each tick so a multi-KOL batch
+ * advances on its own instead of stranding every workflow but the one the
+ * user happens to open in WorkflowRun.
+ */
+export function listActiveWorkflows() {
+  return store.list().filter(w =>
+    w.state !== WORKFLOW_STATE.REPORT_DONE && w.state !== WORKFLOW_STATE.ERROR,
+  );
+}
 export function updateWorkflow(id, patch) { return store.update(id, patch); }
 export function deleteWorkflow(id) { store.remove(id); }
 

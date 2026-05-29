@@ -7,12 +7,13 @@ import { resolve } from 'path';
 import { existsSync, readFileSync, rmSync } from 'fs';
 
 import {
-  createBrowser, setupPage, isLoggedIn,
-  waitForLogin, clearSession, sessionExists,
+  setupPage, isLoggedIn, waitForLogin,
+  launchSessionContext, saveSessionState, hasSavedSession, clearSessionState,
 } from '../../shared/browser.js';
 import { attachInterceptor }         from './interceptor.js';
 import { scrollTab }                 from './scroll.js';
 import { buildFilter, buildEarlyStop } from './filter.js';
+import { createLogger }              from '../../shared/logger.js';
 
 export function parseUsername(raw) {
   const urlMatch = raw.match(/(?:twitter\.com|x\.com)\/@?([A-Za-z0-9_]+)/);
@@ -20,13 +21,13 @@ export function parseUsername(raw) {
   return raw.replace(/^@/, '').trim() || null;
 }
 
-function loadProgress(progressFile) {
+function loadProgress(progressFile, log = createLogger()) {
   if (!progressFile || !existsSync(progressFile)) return new Map();
   try {
     const saved = JSON.parse(readFileSync(progressFile, 'utf-8'));
     const map   = new Map();
     for (const t of saved) map.set(t.id, t);
-    console.log(`Resuming from ${map.size} previously saved tweets.`);
+    log.log(`Resuming from ${map.size} previously saved tweets.`);
     return map;
   } catch {
     return new Map();
@@ -60,15 +61,15 @@ export async function scrapeUser(username, context, opts = {}) {
     keyword = null,
     progressFile = null,
     onProgress = null,
+    logger = null,
   } = opts;
+  const log = createLogger(logger);
 
   const profileUrl = `https://x.com/${username}`;
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  @${username}`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`@${username}`);
 
-  const tweetMap = loadProgress(progressFile);
+  const tweetMap = loadProgress(progressFile, log);
 
   const state = {
     rateLimitUntil:     0,
@@ -86,8 +87,8 @@ export async function scrapeUser(username, context, opts = {}) {
     setupPage(context),
   ]);
 
-  attachInterceptor(page1, tweetMap, state, { debug });
-  attachInterceptor(page2, tweetMap, state, { debug });
+  attachInterceptor(page1, tweetMap, state, { debug, logger });
+  attachInterceptor(page2, tweetMap, state, { debug, logger });
 
   try {
     await page1.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -95,14 +96,14 @@ export async function scrapeUser(username, context, opts = {}) {
 
     const bodyText = await page1.evaluate(() => document.body.innerText);
     if (bodyText.includes("This account doesn't exist") || bodyText.includes('Account suspended')) {
-      console.error(`[ERROR] @${username} not found or suspended.`);
+      log.error(`@${username} not found or suspended.`);
       return [];
     }
 
     const userProgress = onProgress
       ? (count) => onProgress(`@${username}: ${count} 条`)
       : null;
-    const scrollOpts = { maxTweets: max, progressFile, shouldStop, debug, onProgress: userProgress };
+    const scrollOpts = { maxTweets: max, progressFile, shouldStop, debug, onProgress: userProgress, logger };
     await Promise.all([
       scrollTab(page1, profileUrl,                   'Tweets',           tweetMap, state, scrollOpts),
       scrollTab(page2, `${profileUrl}/with_replies`, 'Tweets & Replies', tweetMap, state, scrollOpts),
@@ -179,19 +180,22 @@ export async function scrape(usernames, opts = {}) {
 
   const {
     headed       = false,
-    debug        = false,
     resetSession = false,
     sessionDir   = resolve('sessions/twitter'),
     ...userOpts
   } = opts;
+  // userOpts still carries `logger` + `debug` (not destructured out), so they
+  // flow into scrapeUser automatically; wrap a local logger for scrape()'s
+  // own lines.
+  const log = createLogger(userOpts.logger);
 
-  if (resetSession) clearSession(sessionDir);
+  if (resetSession) clearSessionState(sessionDir);
 
-  if (!sessionExists(sessionDir) && !headed) {
+  if (!hasSavedSession(sessionDir) && !headed) {
     throw new Error('No saved session. Call scrape() with headed: true to log in first.');
   }
 
-  const context = await createBrowser(sessionDir, { headless: !headed, debug });
+  const context = await launchSessionContext(sessionDir, { headless: !headed });
 
   try {
     const checkPage = await setupPage(context);
@@ -201,18 +205,22 @@ export async function scrape(usernames, opts = {}) {
     const loggedIn = await isLoggedIn(checkPage);
     if (!loggedIn) {
       if (headed) {
-        const ok = await waitForLogin(checkPage, names[0]);
+        const ok = await waitForLogin(checkPage, names[0], log);
         if (!ok) throw new Error('Login timed out.');
         // Re-verify: auto-detect may fire before login actually completes
         const verified = await isLoggedIn(checkPage);
         if (!verified) throw new Error('Login could not be verified. Please complete login and try again.');
-        console.log('\nLogin confirmed. Starting scrape...');
+        log.log('Login confirmed. Starting scrape...');
       } else {
         throw new Error('Session expired. Run with --headed to re-login.');
       }
     } else {
-      console.log('Session active.');
+      log.log('Session active.');
     }
+    // Persist cookies + localStorage — captures a fresh login and refreshes an
+    // existing session's tokens. The incognito context has no profile to write
+    // them back to automatically, so we save explicitly.
+    await saveSessionState(context, sessionDir);
     await checkPage.close();
 
     const results = {};

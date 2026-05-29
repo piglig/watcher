@@ -3,6 +3,8 @@
  * Aesthetic: SIGNAL — deep-space black + amber, radar-terminal meets editorial
  */
 
+import { h, jsonForScript } from '../../shared/report-kit.js';
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmt(n) {
@@ -958,14 +960,16 @@ export function generateReport(tweets, username) {
 
   const statsHTML = buildStats(tweets);
   const chartHTML = buildActivityChart(tweets);
-  const data      = JSON.stringify(tweets);
+  // jsonForScript escapes </script> + line separators so tweet text can't break
+  // out of the inline <script> below.
+  const data      = jsonForScript(tweets);
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>@${handle} — Archive</title>
+  <title>@${h(handle)} — Archive</title>
   <style>${CSS}</style>
 </head>
 <body>
@@ -975,13 +979,13 @@ export function generateReport(tweets, username) {
       <div class="header-top animate">
         <div class="profile-block">
           <div class="profile-eyebrow">Tweet Archive</div>
-          <h1 class="profile-name">${name}</h1>
-          <div class="profile-handle">@<span>${handle}</span>${follows ? ` · ${follows}` : ''}</div>
+          <h1 class="profile-name">${h(name)}</h1>
+          <div class="profile-handle">@<span>${h(handle)}</span>${follows ? ` · ${h(follows)}` : ''}</div>
         </div>
         <div class="header-meta">
           <div class="archive-badge">Live Data</div>
           <div class="gen-time">${genTime}</div>
-          ${follows ? `<div class="followers-note">${follows}</div>` : ''}
+          ${follows ? `<div class="followers-note">${h(follows)}</div>` : ''}
         </div>
       </div>
       <div class="animate delay-1">${statsHTML}</div>

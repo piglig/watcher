@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Box, Text, useInput, useStdout } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
+import { useWindowSize } from '../hooks/useWindowSize.js';
 import { SYM } from '../theme.js';
 
 /**
@@ -43,14 +44,7 @@ export default function PagedListPicker({
   reservedLines = 8,
   isActive      = true,
 }) {
-  const { stdout } = useStdout();
-  const [rows, setRows] = useState(stdout?.rows ?? 24);
-  useEffect(() => {
-    if (!stdout) return;
-    const handler = () => setRows(stdout.rows);
-    stdout.on('resize', handler);
-    return () => stdout.off('resize', handler);
-  }, [stdout]);
+  const { rows } = useWindowSize();
 
   const [mode,   setMode]   = useState('nav');     // 'nav' | 'search'
   const [query,  setQuery]  = useState('');

@@ -8,6 +8,7 @@ import { GoogleGenAI } from '@google/genai';
 import { createReadStream, writeFileSync, unlinkSync, readFileSync, mkdirSync, existsSync } from 'fs';
 import { resolve, join }   from 'path';
 import { INTERNAL_DIR } from '../shared/paths.js';
+import { createLogger } from '../shared/logger.js';
 
 export const CATEGORIES = [
   'religion', 'politics', 'race_discrimination',
@@ -361,7 +362,7 @@ function parseResult(content) {
   }
 }
 
-function parseOpenAIOutputJSONL(text) {
+function parseOpenAIOutputJSONL(text, log = createLogger()) {
   const results = {};
   const errors  = [];
   for (const line of text.split('\n').filter(Boolean)) {
@@ -382,12 +383,12 @@ function parseOpenAIOutputJSONL(text) {
         continue;
       }
       results[obj.custom_id] = parseResult(content);
-    } catch (e) { console.warn('[classify] OpenAI line skipped:', e.message ?? e); }
+    } catch (e) { log.warn('[classify] OpenAI line skipped:', e.message ?? e); }
   }
   return { results, errors };
 }
 
-function parseOpenAIErrorJSONL(text) {
+function parseOpenAIErrorJSONL(text, log = createLogger()) {
   const errors = [];
   for (const line of text.split('\n').filter(Boolean)) {
     try {
@@ -397,7 +398,7 @@ function parseOpenAIErrorJSONL(text) {
         code:      obj.error?.code    ?? 'unknown',
         message:   obj.error?.message ?? '(no message)',
       });
-    } catch (e) { console.warn('[classify] OpenAI error-line skipped:', e.message ?? e); }
+    } catch (e) { log.warn('[classify] OpenAI error-line skipped:', e.message ?? e); }
   }
   return errors;
 }
@@ -409,7 +410,7 @@ function extractGeminiText(response) {
   return parts.map(p => p.text ?? '').join('').trim() || '{}';
 }
 
-function parseGeminiOutputJSONL(text) {
+function parseGeminiOutputJSONL(text, log = createLogger()) {
   const results = {};
   for (const line of text.split('\n').filter(Boolean)) {
     try {
@@ -418,11 +419,11 @@ function parseGeminiOutputJSONL(text) {
         // Skip errored items — writing all-zero scores would falsely report
         // "safe" content (e.g. when a 429/credit-depleted error fails every
         // request). Aggregation will ignore missing ids.
-        console.warn(`[classify] Gemini item ${obj.key} skipped: ${obj.error.message ?? obj.error.code ?? 'unknown error'}`);
+        log.warn(`[classify] Gemini item ${obj.key} skipped: ${obj.error.message ?? obj.error.code ?? 'unknown error'}`);
         continue;
       }
       results[obj.key] = parseResult(extractGeminiText(obj.response));
-    } catch (e) { console.warn('[classify] Gemini line parse failed:', e.message ?? e); }
+    } catch (e) { log.warn('[classify] Gemini line parse failed:', e.message ?? e); }
   }
   return results;
 }
@@ -468,15 +469,16 @@ function normalizeGeminiProgress(batch) {
   return total > 0 ? `${completed + failed}/${total}` : batch.state ?? 'pending';
 }
 
-async function submitOpenAIBatch(posts, { apiKey, model, debug }) {
+async function submitOpenAIBatch(posts, { apiKey, model, debug, logger }) {
   const {
     client = new OpenAI({ apiKey }),
   } = {};
-  const dbg     = (...m) => debug && console.log('[DBG]', ...m);
+  const log     = createLogger(logger);
+  const dbg     = (...m) => debug && log.log('[DBG]', ...m);
 
   const jsonl   = buildBatchJSONL(posts, model);
   const count   = jsonl.split('\n').filter(Boolean).length;
-  console.log(`  Preparing ${count} items for OpenAI Batch API (model: ${model})...`);
+  log.log(`  Preparing ${count} items for OpenAI Batch API (model: ${model})...`);
 
   const tmpPath = resolve(`.tmp-classify-${Date.now()}.jsonl`);
   writeFileSync(tmpPath, jsonl, 'utf-8');
@@ -494,22 +496,23 @@ async function submitOpenAIBatch(posts, { apiKey, model, debug }) {
       completion_window: '24h',
     });
 
-    console.log(`  Batch submitted: ${batch.id}`);
-    console.log(`  Retrieve later: node classify.js --batch-id ${batch.id} --input <file> --out <dir>`);
-    console.log(`  (Rule-engine pre-filtered ${posts.length - count} posts; only ${count} sent to LLM)`);
+    log.log(`  Batch submitted: ${batch.id}`);
+    log.log(`  Retrieve later: node classify.js --batch-id ${batch.id} --input <file> --out <dir>`);
+    log.log(`  (Rule-engine pre-filtered ${posts.length - count} posts; only ${count} sent to LLM)`);
     return { batchId: batch.id, count };
   } finally {
     unlinkSync(tmpPath);
   }
 }
 
-async function submitGeminiBatch(posts, { apiKey, model, debug }) {
+async function submitGeminiBatch(posts, { apiKey, model, debug, logger }) {
   const ai = new GoogleGenAI({ apiKey });
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   const jsonl = buildGeminiBatchJSONL(posts);
   const count = jsonl.split('\n').filter(Boolean).length;
-  console.log(`  Preparing ${count} items for Gemini Batch API (model: ${model})...`);
+  log.log(`  Preparing ${count} items for Gemini Batch API (model: ${model})...`);
 
   const tmpPath = resolve(`.tmp-classify-gemini-${Date.now()}.jsonl`);
   writeFileSync(tmpPath, jsonl, 'utf-8');
@@ -527,17 +530,18 @@ async function submitGeminiBatch(posts, { apiKey, model, debug }) {
       config: { displayName: `sns-audit-classify-${Date.now()}` },
     });
 
-    console.log(`  Gemini batch submitted: ${batch.name}`);
-    console.log(`  (Rule-engine pre-filtered ${posts.length - count} posts; only ${count} sent to LLM)`);
+    log.log(`  Gemini batch submitted: ${batch.name}`);
+    log.log(`  (Rule-engine pre-filtered ${posts.length - count} posts; only ${count} sent to LLM)`);
     return { batchId: batch.name, count };
   } finally {
     unlinkSync(tmpPath);
   }
 }
 
-async function submitDeepSeekBatch(posts, { apiKey, model, debug, signal, onProgress }) {
+async function submitDeepSeekBatch(posts, { apiKey, model, debug, signal, onProgress, logger }) {
   const client = new OpenAI({ apiKey, baseURL: 'https://api.deepseek.com' });
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
   const inputs = [];
   const seenTexts = new Set();
   const seenIds = new Set();
@@ -556,7 +560,7 @@ async function submitDeepSeekBatch(posts, { apiKey, model, debug, signal, onProg
     inputs.push(post);
   }
 
-  console.log(`  Preparing ${inputs.length} items for DeepSeek Chat API (model: ${model}, text-only)...`);
+  log.log(`  Preparing ${inputs.length} items for DeepSeek Chat API (model: ${model}, text-only)...`);
   const batchId = `deepseek_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const results = {};
 
@@ -582,7 +586,7 @@ async function submitDeepSeekBatch(posts, { apiKey, model, debug, signal, onProg
   );
 
   writeFileSync(deepSeekResultFile(batchId), JSON.stringify({ status: 'completed', results }, null, 2), 'utf-8');
-  console.log(`  DeepSeek classification completed locally: ${batchId}`);
+  log.log(`  DeepSeek classification completed locally: ${batchId}`);
   return { batchId, count: inputs.length };
 }
 
@@ -594,25 +598,27 @@ export async function submitBatch(posts, opts = {}) {
     debug = false,
     signal,
     onProgress,
+    logger = null,
   } = opts;
 
   if (provider === AI_PROVIDERS.GEMINI) {
     if (!apiKey) throw new Error('GEMINI_API_KEY required. Set env var or configure it in settings.');
-    return submitGeminiBatch(posts, { apiKey, model, debug });
+    return submitGeminiBatch(posts, { apiKey, model, debug, logger });
   }
 
   if (provider === AI_PROVIDERS.DEEPSEEK) {
     if (!apiKey) throw new Error('DEEPSEEK_API_KEY required. Set env var or configure it in settings.');
-    return submitDeepSeekBatch(posts, { apiKey, model, debug, signal, onProgress });
+    return submitDeepSeekBatch(posts, { apiKey, model, debug, signal, onProgress, logger });
   }
 
   if (!apiKey) throw new Error('OPENAI_API_KEY required. Set env var or configure it in settings.');
-  return submitOpenAIBatch(posts, { apiKey, model, debug });
+  return submitOpenAIBatch(posts, { apiKey, model, debug, logger });
 }
 
-async function fetchOpenAIResults(batchId, { apiKey, wait, debug }) {
+async function fetchOpenAIResults(batchId, { apiKey, wait, debug, logger }) {
   const client = new OpenAI({ apiKey });
-  const dbg    = (...m) => debug && console.log('[DBG]', ...m);
+  const log    = createLogger(logger);
+  const dbg    = (...m) => debug && log.log('[DBG]', ...m);
 
   while (true) {
     const batch = await client.batches.retrieve(batchId);
@@ -621,7 +627,7 @@ async function fetchOpenAIResults(batchId, { apiKey, wait, debug }) {
 
     if (batch.status === 'completed') {
       const raw = await client.files.content(batch.output_file_id);
-      const { results, errors: outputErrors } = parseOpenAIOutputJSONL(await raw.text());
+      const { results, errors: outputErrors } = parseOpenAIOutputJSONL(await raw.text(), log);
 
       // Per-request failures (image fetch 4xx, content policy, etc.) land in
       // a separate error_file. Without reading it those posts are silently
@@ -630,9 +636,9 @@ async function fetchOpenAIResults(batchId, { apiKey, wait, debug }) {
       if (batch.error_file_id) {
         try {
           const errRaw = await client.files.content(batch.error_file_id);
-          fileErrors.push(...parseOpenAIErrorJSONL(await errRaw.text()));
+          fileErrors.push(...parseOpenAIErrorJSONL(await errRaw.text(), log));
         } catch (e) {
-          console.warn(`[classify] failed to read error_file ${batch.error_file_id}:`, e.message ?? e);
+          log.warn(`[classify] failed to read error_file ${batch.error_file_id}:`, e.message ?? e);
         }
       }
 
@@ -646,14 +652,15 @@ async function fetchOpenAIResults(batchId, { apiKey, wait, debug }) {
 
     if (!wait) return { status: batch.status, progress: `${completed}/${total}` };
 
-    process.stdout.write(`\r  Waiting: ${batch.status} (${completed}/${total})...`);
+    log.write(`  Waiting: ${batch.status} (${completed}/${total})...`);
     await new Promise(r => setTimeout(r, 30_000));
   }
 }
 
-async function fetchGeminiResults(batchId, { apiKey, wait, debug }) {
+async function fetchGeminiResults(batchId, { apiKey, wait, debug, logger }) {
   const ai = new GoogleGenAI({ apiKey });
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
   while (true) {
     const batch = await ai.batches.get({ name: batchId });
@@ -664,7 +671,7 @@ async function fetchGeminiResults(batchId, { apiKey, wait, debug }) {
         const outPath = resolve(`.tmp-classify-gemini-result-${Date.now()}.jsonl`);
         await ai.files.download({ file: batch.dest.fileName, downloadPath: outPath });
         try {
-          return { status: 'completed', results: parseGeminiOutputJSONL(readFileSync(outPath, 'utf-8')) };
+          return { status: 'completed', results: parseGeminiOutputJSONL(readFileSync(outPath, 'utf-8'), log) };
         } finally {
           unlinkSync(outPath);
         }
@@ -684,7 +691,7 @@ async function fetchGeminiResults(batchId, { apiKey, wait, debug }) {
 
     if (!wait) return { status: batch.state ?? 'pending', progress: normalizeGeminiProgress(batch) };
 
-    process.stdout.write(`\r  Waiting: ${batch.state} (${normalizeGeminiProgress(batch)})...`);
+    log.write(`  Waiting: ${batch.state} (${normalizeGeminiProgress(batch)})...`);
     await new Promise(r => setTimeout(r, 30_000));
   }
 }
@@ -693,10 +700,20 @@ async function fetchDeepSeekResults(batchId) {
   let raw;
   try {
     raw = readFileSync(deepSeekResultFile(batchId), 'utf-8');
-  } catch {
-    return { status: 'pending', progress: '0/1' };
+  } catch (e) {
+    // Only a genuinely-missing file means "not ready yet" (DeepSeek writes the
+    // result file synchronously on completion). A present-but-unreadable file
+    // (permissions, partial) must surface as an error — returning 'pending'
+    // here is what made a corrupt result loop the daemon forever.
+    if (e.code === 'ENOENT') return { status: 'pending', progress: '0/1' };
+    throw new Error(`DeepSeek result file unreadable for ${batchId}: ${e.message}`);
   }
-  const obj = JSON.parse(raw);
+  let obj;
+  try {
+    obj = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`DeepSeek result file corrupt for ${batchId}: ${e.message}`);
+  }
   return { status: obj.status ?? 'completed', results: obj.results ?? {} };
 }
 
@@ -706,11 +723,12 @@ export async function fetchBatchResults(batchId, opts = {}) {
     apiKey = apiKeyForProvider(provider),
     wait = false,
     debug = false,
+    logger = null,
   } = opts;
 
   if (provider === AI_PROVIDERS.GEMINI) {
     if (!apiKey) throw new Error('GEMINI_API_KEY required. Set env var or configure it in settings.');
-    return fetchGeminiResults(batchId, { apiKey, wait, debug });
+    return fetchGeminiResults(batchId, { apiKey, wait, debug, logger });
   }
 
   if (provider === AI_PROVIDERS.DEEPSEEK) {
@@ -719,7 +737,7 @@ export async function fetchBatchResults(batchId, opts = {}) {
   }
 
   if (!apiKey) throw new Error('OPENAI_API_KEY required. Set env var or configure it in settings.');
-  return fetchOpenAIResults(batchId, { apiKey, wait, debug });
+  return fetchOpenAIResults(batchId, { apiKey, wait, debug, logger });
 }
 
 // ── User risk aggregation ─────────────────────────────────────────────────────
@@ -811,4 +829,27 @@ export function aggregateUserRisk(posts, results) {
       flagged_posts: u.flagged.slice(0, 10),
     };
   }).sort((a, b) => b.risk_score - a.risk_score);
+}
+
+/**
+ * Fold per-batch LLM errors + post-vs-result coverage into a compact stats
+ * object for the session summary. Pure (no I/O) so it's unit-testable.
+ *
+ * `unclassified` is exactly the set aggregateUserRisk() silently skips
+ * (posts whose id has no entry in `results`), so the two counts are consistent.
+ *
+ * @param {object[]} allPosts
+ * @param {Object.<string,object>} allResults   rule + llm results keyed by post id
+ * @param {Array<{custom_id?:string,code?:string,message?:string}>} [batchErrors]
+ * @returns {{ classify_failed:number, unclassified:number, error_sample:Array }}
+ */
+export function computeErrorStats(allPosts, allResults, batchErrors = []) {
+  const keys = new Set(Object.keys(allResults));
+  let unclassified = 0;
+  for (const p of allPosts) if (!keys.has(String(p.id))) unclassified++;
+  const error_sample = batchErrors.slice(0, 3).map(e => ({
+    code:    e.code ?? 'unknown',
+    message: String(e.message ?? '').slice(0, 120),
+  }));
+  return { classify_failed: batchErrors.length, unclassified, error_sample };
 }

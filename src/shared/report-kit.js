@@ -22,6 +22,68 @@ export function escapeHtml(s) {
 /** Shorthand alias used in template-string-heavy callsites. */
 export const h = escapeHtml;
 
+/** Escape a string for use inside a Markdown table cell. */
+export function mdEscape(s) {
+  return String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+}
+
+// ── Trusted-HTML marker + html`` tagged template ─────────────────────────────
+//
+// `html` auto-escapes every interpolated value, so the default path is safe.
+// Values wrapped in `raw()` are emitted verbatim — use it only for HTML you
+// built yourself (already-escaped fragments, other html`` results). Arrays are
+// flattened and joined, so `${rows.map(r => html`<tr>…`)}` works.
+
+const RAW = Symbol('report-kit.raw');
+
+/**
+ * Mark a string as trusted, pre-built HTML so html`` won't escape it.
+ * The returned wrapper stringifies to its value, so an html`` result can also
+ * be dropped straight into writeFileSync / a plain template literal.
+ */
+export function raw(value) {
+  const s = String(value ?? '');
+  return { [RAW]: true, value: s, toString: () => s };
+}
+
+function renderValue(v) {
+  if (v == null || v === false) return '';
+  if (Array.isArray(v)) return v.map(renderValue).join('');
+  if (v && typeof v === 'object' && v[RAW] === true) return v.value;
+  return escapeHtml(v);
+}
+
+/**
+ * Tagged template that HTML-escapes every interpolation by default. Wrap a
+ * value in `raw()` to bypass escaping. Returns a `raw()`-marked result so
+ * html`` fragments nest cleanly.
+ */
+export function html(strings, ...values) {
+  let out = strings[0];
+  for (let i = 0; i < values.length; i++) {
+    out += renderValue(values[i]) + strings[i + 1];
+  }
+  return raw(out);
+}
+
+/**
+ * Serialize a value to JSON safe for embedding inside an inline `<script>`.
+ * Escapes `<`, `>`, `&` and the U+2028/U+2029 line separators so a string like
+ * `</script>` in the data can't terminate the tag or break the parse.
+ */
+export function jsonForScript(value) {
+  // U+2028 / U+2029 are valid in JSON strings but act as line terminators in
+  // JS source, so they must be escaped when embedding JSON inside <script>.
+  const LS = String.fromCharCode(0x2028);
+  const PS = String.fromCharCode(0x2029);
+  return JSON.stringify(value ?? null)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .split(LS).join('\\u2028')
+    .split(PS).join('\\u2029');
+}
+
 // ── Base CSS — shared by all moderation/OSINT reports ────────────────────────
 
 export const BASE_CSS = `
@@ -152,7 +214,17 @@ function buildHTML(table, opts) {
       const dv = c.getAttribute('data-value');
       const rs = Number(c.getAttribute('rowspan') ?? 1);
       const cs = Number(c.getAttribute('colspan') ?? 1);
-      const attrs = (rs > 1 ? ' rowspan="' + rs + '"' : '') + (cs > 1 ? ' colspan="' + cs + '"' : '');
+      // Carry text-align through to the clipboard HTML — Sheets/Excel honor
+      // inline style on paste (and external CSS is stripped), so this is the
+      // only path for column alignment to survive copy.
+      const cs2 = window.getComputedStyle(c);
+      const ta = cs2 && cs2.textAlign;
+      const styleAttr = (ta === 'center' || ta === 'right')
+        ? ' style="text-align:' + ta + '"'
+        : '';
+      const attrs = (rs > 1 ? ' rowspan="' + rs + '"' : '')
+        + (cs > 1 ? ' colspan="' + cs + '"' : '')
+        + styleAttr;
       const content = dv !== null ? esc(dv) : sanitize(c);
       return '<' + tag + attrs + '>' + content + '</' + tag + '>';
     }).join('');

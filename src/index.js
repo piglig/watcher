@@ -10,74 +10,27 @@
  * const report = aggregateUserRisk(tweets, results);
  */
 
-// ── Twitter ───────────────────────────────────────────────────────────────────
-export {
-  scrapeTwitter, scrapeTwitterUser, parseTwitterUsername,
-  toJSON   as toTwitterJSON,
-  toCSV    as toTwitterCSV,
-  generateReport as generateTwitterReport,
-} from './platforms/twitter/index.js';
+// ── Platform scrapers ───────────────────────────────────────────────────────
+// Every platform writes the uniform { profile?, posts } shape via scrapeToJSON
+// (below). Per-platform CSV/print serializers were removed in favour of the
+// registry + unified output.
+export { scrapeTwitter, scrapeTwitterUser, parseTwitterUsername,
+         generateReport as generateTwitterReport } from './platforms/twitter/index.js';
+export { scrapeTikTok, scrapeTikTokUser, parseTikTokUser } from './platforms/tiktok/index.js';
+export { scrapeReddit, fetchSubreddit, fetchUser,
+         scrapeArctic, fetchSubredditArctic, fetchUserArctic } from './platforms/reddit/index.js';
+export { scrapeThreads, scrapeThreadsUser, parseThreadsUsername } from './platforms/threads/index.js';
+export { scrapePixiv, scrapePixivUser, parsePixivUser } from './platforms/pixiv/index.js';
+export { scrapeNaver, scrapeNaverCafe, parseNaverCafe } from './platforms/naver/index.js';
+export { scrapeTwitch, scrapeTwitchChannel, parseTwitchLogin } from './platforms/twitch/index.js';
+export { scrapeInstagram, scrapeInstagramUser, parseInstagramUsername } from './platforms/instagram/index.js';
+export { scrapeBluesky, scrapeBlueskyUser, parseBlueskyHandle } from './platforms/bluesky/index.js';
+export { scrapeFacebook, scrapeFacebookUser, parseFacebookUsername } from './platforms/facebook/index.js';
+export { scrapeYouTube, scrapeYouTubeChannel, parseYouTubeChannel } from './platforms/youtube/index.js';
 
-// ── TikTok ────────────────────────────────────────────────────────────────────
-export {
-  scrapeTikTok, scrapeTikTokUser, parseTikTokUser,
-  toTikTokJSON, toTikTokCSV, toTikTokCommentsCSV,
-} from './platforms/tiktok/index.js';
-
-// ── Reddit ────────────────────────────────────────────────────────────────────
-export {
-  scrapeReddit, fetchSubreddit, fetchUser,
-  scrapeArctic, fetchSubredditArctic, fetchUserArctic,
-  toRedditJSON, toRedditCSV,
-} from './platforms/reddit/index.js';
-
-// ── Threads ───────────────────────────────────────────────────────────────────
-export {
-  scrapeThreads, scrapeThreadsUser, parseThreadsUsername,
-  toThreadsJSON, toThreadsCSV,
-} from './platforms/threads/index.js';
-
-// ── Pixiv ─────────────────────────────────────────────────────────────────────
-export {
-  scrapePixiv, scrapePixivUser, parsePixivUser,
-  toPixivJSON, toPixivCSV,
-} from './platforms/pixiv/index.js';
-
-// ── Naver ─────────────────────────────────────────────────────────────────────
-export {
-  scrapeNaver, scrapeNaverCafe, parseNaverCafe,
-  toNaverJSON, toNaverCSV,
-} from './platforms/naver/index.js';
-
-// ── Twitch ────────────────────────────────────────────────────────────────────
-export {
-  scrapeTwitch, scrapeTwitchChannel, parseTwitchLogin,
-  toTwitchJSON, toTwitchVodsCSV, toTwitchClipsCSV,
-} from './platforms/twitch/index.js';
-
-// ── Instagram ─────────────────────────────────────────────────────────────────
-export {
-  scrapeInstagram, scrapeInstagramUser, parseInstagramUsername,
-  toInstagramJSON, toInstagramCSV,
-} from './platforms/instagram/index.js';
-
-// ── Bluesky ───────────────────────────────────────────────────────────────────
-export {
-  scrapeBluesky, scrapeBlueskyUser, parseBlueskyHandle,
-  toBlueskyJSON, toBlueskyCSV,
-} from './platforms/bluesky/index.js';
-
-// ── Facebook ──────────────────────────────────────────────────────────────────
-export {
-  scrapeFacebook, scrapeFacebookUser, parseFacebookUsername,
-  toFacebookJSON, toFacebookCSV,
-} from './platforms/facebook/index.js';
-
-// ── YouTube ───────────────────────────────────────────────────────────────────
-export {
-  scrapeYouTube, scrapeYouTubeChannel, parseYouTubeChannel,
-  toYouTubeJSON, toYouTubeCSV,
-} from './platforms/youtube/index.js';
+// ── Platform registry + unified output ────────────────────────────────────────
+export { REGISTRY, PLATFORMS, PLATFORM_ORDER, API_PLATFORMS } from './platforms/registry.js';
+export { scrapeToJSON } from './platforms/scrape-output.js';
 
 // ── Classifier ────────────────────────────────────────────────────────────────
 export {

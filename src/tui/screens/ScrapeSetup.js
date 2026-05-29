@@ -9,7 +9,7 @@ import KeyBar from '../components/KeyBar.js';
 import PagedListPicker from '../components/PagedListPicker.js';
 import { Indicator, Item } from '../components/SelectChrome.js';
 import { SYM } from '../theme.js';
-import { PLATFORMS } from '../runner.js';
+import { PLATFORMS } from '../../platforms/registry.js';
 import { getConfig } from '../../shared/config-store.js';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, join, relative } from 'path';

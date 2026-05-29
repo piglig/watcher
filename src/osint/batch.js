@@ -9,6 +9,7 @@ import { makeSlugger, writeResults } from './output.js';
 import { createBatch, addRequests, getBatch, getAllResults } from './xai-client.js';
 import { saveBatch, updateBatch } from '../shared/batch-store.js';
 import { extractBioLinks, renderBioExtract } from './bio-extractor.js';
+import { createLogger } from '../shared/logger.js';
 
 export const DEFAULT_MODEL = 'grok-4.3';
 
@@ -33,7 +34,7 @@ async function mapWithConcurrency(items, limit, fn) {
  * @param {{name:string, seedUrl:string}[]} targets
  * @returns {Promise<{ batchRequests:object[], targetsMap:Record<string,{name,seed_url}> }>}
  */
-export async function buildBatchRequests(targets, model = DEFAULT_MODEL) {
+export async function buildBatchRequests(targets, model = DEFAULT_MODEL, log = createLogger()) {
   const slug = makeSlugger();
   const targetsMap    = {};
   const batchRequests = [];
@@ -42,16 +43,16 @@ export async function buildBatchRequests(targets, model = DEFAULT_MODEL) {
   const valid = targets.filter(t => t?.name && t?.seedUrl);
   if (!valid.length) return { batchRequests, targetsMap };
 
-  console.log(`  Pre-extracting bio links from ${valid.length} seed URL(s)...`);
+  log.log(`  Pre-extracting bio links from ${valid.length} seed URL(s)...`);
   const extracts = await mapWithConcurrency(valid, PREEXTRACT_CONCURRENCY, async ({ seedUrl }) => {
     try { return await extractBioLinks(seedUrl); }
     catch (e) {
-      console.warn(`[osint] Pre-extract failed for ${seedUrl}: ${e.message ?? e}`);
+      log.warn(`[osint] Pre-extract failed for ${seedUrl}: ${e.message ?? e}`);
       return null;
     }
   });
   const hitCount = extracts.filter(Boolean).length;
-  console.log(`  Pre-extract: ${hitCount}/${valid.length} seeds yielded structured bio data`);
+  log.log(`  Pre-extract: ${hitCount}/${valid.length} seeds yielded structured bio data`);
 
   valid.forEach(({ name, seedUrl }, idx) => {
     const id = slug(name);
@@ -84,13 +85,15 @@ export async function submitBatch(targets, opts = {}) {
     outDir,        // fixed dir (standalone OSINT)
     outDirFor,     // (batchId) => path (workflows want batchId-named dir)
     subjectOutDir, // user-facing root for promote-to-subject (persisted on the record)
+    logger = null,
   } = opts;
+  const log = createLogger(logger);
 
   if (!apiKey) throw new Error('XAI_API_KEY required. Set env var or fill it in Settings.');
   if (!outDir && !outDirFor) throw new Error('outDir or outDirFor required for OSINT batch');
   if (!targets?.length) throw new Error('No targets provided');
 
-  const { batchRequests, targetsMap } = await buildBatchRequests(targets, model);
+  const { batchRequests, targetsMap } = await buildBatchRequests(targets, model, log);
   if (!batchRequests.length) throw new Error('All targets were invalid (missing name or seedUrl)');
 
   // Create batch first — gives us batchId before we touch disk.
@@ -146,7 +149,9 @@ export async function fetchBatchResults(batchId, opts = {}) {
     outDir,
     targetsMap = null,
     wait = false,
+    logger = null,
   } = opts;
+  const log = createLogger(logger);
 
   if (!apiKey) throw new Error('XAI_API_KEY required');
   if (!outDir) throw new Error('outDir required');
@@ -156,7 +161,7 @@ export async function fetchBatchResults(batchId, opts = {}) {
 
     if (isDone(batch)) {
       const results = await getAllResults({ apiKey, batchId });
-      const map = targetsMap ?? readTargetsMap(outDir);
+      const map = targetsMap ?? readTargetsMap(outDir, log);
       const summary = writeResults(results, outDir, map);
       const finalStatus = batch.cancel_time ? 'cancelled' : 'completed';
       updateBatch(batchId, { status: finalStatus, completed_at: new Date().toISOString() });
@@ -169,12 +174,12 @@ export async function fetchBatchResults(batchId, opts = {}) {
   }
 }
 
-function readTargetsMap(outDir) {
+function readTargetsMap(outDir, log = createLogger()) {
   try {
     const p = join(outDir, '_targets.json');
     if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf-8'));
   } catch (e) {
-    console.warn('[osint] _targets.json unreadable:', e.message ?? e);
+    log.warn('[osint] _targets.json unreadable:', e.message ?? e);
   }
   return {};
 }

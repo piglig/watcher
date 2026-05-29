@@ -15,14 +15,14 @@ import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
 import PagedListPicker from '../components/PagedListPicker.js';
 import { SYM } from '../theme.js';
-import { listBatches, updateBatch, deleteBatch, BATCH_STATUS } from '../../shared/batch-store.js';
+import { listBatchesByKind, updateBatch, deleteBatch, BATCH_STATUS } from '../../shared/batch-store.js';
 import {
-  listSessions, updateSession, deleteSession, SESSION_STATE,
+  getSession, updateSession, deleteSession, SESSION_STATE,
 } from '../../shared/sessions-store.js';
-import { useSessions } from '../hooks/useSession.js';
+import { useSessionsLite } from '../hooks/useSession.js';
 import { cancelBatch as cancelXaiBatch } from '../../osint/xai-client.js';
 import { fetchBatchResults } from '../../osint/index.js';
-import { regenerateReports, requestSessionCancel } from '../../classifier/session.js';
+import { regenerateReports, requestSessionCancel, retryErroredSession } from '../../classifier/session.js';
 import { getConfig } from '../../shared/config-store.js';
 import { OpenAI } from 'openai';
 import { GoogleGenAI } from '@google/genai';
@@ -51,7 +51,11 @@ const STATE_LABEL = {
   cancelled:  '已取消',
 };
 
-async function cancelClassifySession(session) {
+async function cancelClassifySession(sessionId) {
+  // Re-fetch the full record — JobsList only holds the lite projection,
+  // and we need batch_ids + provider/model here.
+  const session = getSession(sessionId);
+  if (!session) return;
   const provider = inferProvider(session.model, session.provider);
   if (provider === AI_PROVIDERS.DEEPSEEK) {
     // DeepSeek has no remote batch — `submit` IS the work. requestSessionCancel
@@ -84,20 +88,21 @@ async function cancelOsintBatch(batch) {
 }
 
 export default function JobsList({ onNav }) {
-  const sessions = useSessions();
-  const allBatches = listBatches();
-  const osintBatches = allBatches.filter(b => b.kind === 'osint');
+  const sessions = useSessionsLite();
+  const osintBatches = listBatchesByKind('osint');
 
-  // Unified row model
+  // Unified row model. Sessions use the lite projection (no input_files /
+  // result_files / logs in memory); action handlers re-fetch the full record
+  // via getSession(id) on demand.
   const rows = [
     ...sessions.map(s => ({
       kind:    'session',
       id:      s.id,
       state:   s.state,
       label:   `classify · ${s.id.slice(-12)}`,
-      meta:    `${s.completed}/${s.chunks_total || '?'} 批 · ${s.input_files.length} 文件`,
+      meta:    `${s.completed}/${s.chunks_total || '?'} 批 · ${s.input_files_count} 文件`,
       created: s.created_at,
-      raw:     s,
+      raw:     null,  // lazily fetched by handlers that need it
     })),
     ...osintBatches.map(b => ({
       kind:    'osint',
@@ -121,7 +126,7 @@ export default function JobsList({ onNav }) {
     if (input === 'y' || input === 'Y') {
       setBusy(true);
       try {
-        if (confirming.kind === 'session') await cancelClassifySession(confirming.raw);
+        if (confirming.kind === 'session') await cancelClassifySession(confirming.id);
         else                                await cancelOsintBatch(confirming.raw);
         setFeedback(`${SYM.check} 已取消 ${confirming.id.slice(-12)}`);
       } catch (e) {
@@ -210,6 +215,10 @@ export default function JobsList({ onNav }) {
     }
     if (input === 'r' || input === 'R') {
       if (item.kind === 'osint') refreshOsintBatch(item);
+      else if (item.kind === 'session' && item.state === SESSION_STATE.ERROR) {
+        retryErroredSession(item.id);
+        setFeedback(`${SYM.run} ${item.id.slice(-12)} 已重新开始下载，Enter 查看进度`);
+      }
     }
     if (input === 'g' || input === 'G') {
       if (item.kind === 'session' && item.state === SESSION_STATE.COMPLETED) regenerateClassifyReports(item);
@@ -271,7 +280,7 @@ export default function JobsList({ onNav }) {
                 { key: 'Enter',     label: '查看' },
                 { key: '/',         label: '搜索' },
                 { key: 'PgUp/PgDn', label: '翻页' },
-                { key: 'r',         label: '主动下载 (OSINT)' },
+                { key: 'r',         label: '主动下载 / 重试出错任务' },
                 { key: 'g',         label: '重建报告 (Classify)' },
                 { key: 'c',         label: '取消' },
                 { key: 'ESC',       label: '返回' },

@@ -20,7 +20,7 @@ import { mergeAndNormalize } from '../shared/normalize.js';
 import { applyRulesAll } from './rules.js';
 import {
   submitBatch, fetchBatchResults, aggregateUserRisk, chunkPosts, inferProvider,
-  apiKeyForProvider, envNameForProvider,
+  apiKeyForProvider, envNameForProvider, computeErrorStats,
 } from './classifier.js';
 import { toClassifierJSON, toUserRiskCSV, toFlaggedPostsCSV } from './output.js';
 import { updateSession, appendSessionLog, getSession, SESSION_STATE, TERMINAL_STATES } from '../shared/sessions-store.js';
@@ -217,7 +217,7 @@ function writeAllReports(session, { allPosts, fileMeta, allResults, userRisk, so
         classify: { session_id: session.id },
       });
     } catch (e) {
-      console.warn(`[report] renderReport failed for ${kolId}:`, e.message ?? e);
+      appendSessionLog(session.id, `[report] renderReport failed for ${kolId}: ${e.message ?? e}`);
     }
 
     const level = worstLevel(kolUserRisk);
@@ -275,7 +275,7 @@ function purgeAnalysisDirs(outRoot, sid) {
     const dir = join(outRoot, e.name, 'analysis', sid);
     if (existsSync(dir)) {
       try { rmSync(dir, { recursive: true, force: true }); }
-      catch (err) { console.warn(`[regenerate] failed to clean ${dir}:`, err.message ?? err); }
+      catch (err) { appendSessionLog(sid, `[regenerate] failed to clean ${dir}: ${err.message ?? err}`); }
     }
   }
 }
@@ -373,17 +373,66 @@ const advanceLocks  = new Map();
 // _doAdvance's finally.
 const activeAborts  = new Map();
 
+// Per-session derivation cache. The daemon ticks _doAdvance every 30s while a
+// session is pending; without this cache, every tick re-reads every input file
+// (potentially hundreds of MB of synchronous I/O) and re-runs the rule pass and
+// the chunker — all to compute values that are deterministic from input_files
+// and don't change for the lifetime of the session. We also accumulate per-
+// batch LLM results here so already-drained batches don't get re-fetched from
+// the provider on every tick.
+//
+// Shape: sessionId → {
+//   allPosts, fileMeta, ruleResults, ruleHits, llmPosts, chunks,
+//   llmResults: {},          // accumulated across ticks; merged into final aggregate
+//   drainedBatchIds: Set     // batches we've already fetched + folded into llmResults
+// }
+//
+// Evicted by advanceSession() when the session reaches a terminal state, by
+// retryErroredSession() (so a retry starts fresh), and by requestSessionCancel.
+const sessionCaches = new Map();
+
+function evictSessionCache(sessionId) {
+  sessionCaches.delete(sessionId);
+}
+
 /**
  * Mark a session cancelled and abort any in-flight realtime work it owns.
  * Used by the TUI cancel handler — particularly necessary for DeepSeek, where
  * `submit` is the full classification work (no remote batch to cancel).
  */
+/**
+ * Retry an errored session. Clears the error and flips state back to PENDING
+ * so the App-level daemon picks it up. Also kicks advanceSession immediately
+ * for UX (no 30s wait). Safe to call on non-ERROR sessions — it's a no-op.
+ *
+ * On the next tick, `_doAdvance` walks session.batch_ids and re-fetches each
+ * batch: already-completed batches return cached results from the provider,
+ * the previously-failed batch is retried, and remaining chunks are submitted.
+ * Per-batch "[i/N] 批次完成" logs flow into the existing SessionView LogPanel,
+ * so the user sees download progress live.
+ */
+export function retryErroredSession(sessionId) {
+  const s = getSession(sessionId);
+  if (!s) return null;
+  if (s.state !== SESSION_STATE.ERROR) return s;
+  appendSessionLog(sessionId, `主动重试：从 Batch API 重新拉取 ${s.batch_ids?.length ?? 0} 个批次`);
+  // Drop any stale cache so the retry rebuilds chunks + refetches batch results
+  // from scratch (the prior failure may have left llmResults partially populated).
+  evictSessionCache(sessionId);
+  const updated = updateSession(sessionId, { state: SESSION_STATE.PENDING, error: null });
+  // Kick advance loop in background — don't block caller; errors are
+  // already routed back into session state by _doAdvance.
+  advanceSession(updated).catch(e => appendSessionLog(updated.id, `重试失败：${e.message ?? e}`));
+  return updated;
+}
+
 export function requestSessionCancel(sessionId, reason = '用户取消') {
   const s = getSession(sessionId);
   if (!s) return null;
   if (TERMINAL_STATES.has(s.state)) return s;
   updateSession(sessionId, { state: SESSION_STATE.CANCELLED, error: reason });
   activeAborts.get(sessionId)?.abort(reason);
+  evictSessionCache(sessionId);
   return getSession(sessionId);
 }
 
@@ -393,8 +442,15 @@ export async function advanceSession(initial) {
   const inFlight = advanceLocks.get(id);
   if (inFlight) return inFlight;
   const p = (async () => {
-    try { return await _doAdvance(initial); }
-    finally { advanceLocks.delete(id); }
+    try {
+      return await _doAdvance(initial);
+    } finally {
+      advanceLocks.delete(id);
+      // Free the derivation cache the moment the session reaches a terminal
+      // state — these caches can hold hundreds of MB of post arrays.
+      const cur = getSession(id);
+      if (cur && TERMINAL_STATES.has(cur.state)) evictSessionCache(id);
+    }
   })();
   advanceLocks.set(id, p);
   return p;
@@ -413,12 +469,31 @@ async function _doAdvance(initial) {
   }
 
   try {
-    // 1) Re-derive deterministic chunks from inputs.
-    const { posts: allPosts, fileMeta } = loadAllPosts(session.input_files);
-    const ruleHits    = applyRulesAll(allPosts);
-    const ruleResults = Object.fromEntries(ruleHits);
-    const llmPosts    = allPosts.filter(p => !ruleResults[String(p.id)]);
-    const chunks      = chunkPosts(llmPosts);
+    // 1) Re-derive deterministic chunks from inputs — cached per session.
+    //    loadAllPosts + applyRulesAll + chunkPosts depend only on input_files,
+    //    which never changes after createSession. Caching avoids re-reading and
+    //    re-parsing potentially hundreds of MB of scrape JSON every daemon tick.
+    let cache = sessionCaches.get(session.id);
+    if (!cache) {
+      const { posts: allPosts, fileMeta } = loadAllPosts(session.input_files);
+      const ruleHits    = applyRulesAll(allPosts);
+      const ruleResults = Object.fromEntries(ruleHits);
+      const llmPosts    = allPosts.filter(p => !ruleResults[String(p.id)]);
+      const chunks      = chunkPosts(llmPosts);
+      cache = {
+        allPosts, fileMeta, ruleHits, ruleResults, llmPosts, chunks,
+        // llmResults accumulates as batches drain — persistent across ticks so
+        // a session with N completed batches doesn't re-hit the provider for
+        // results we've already fetched.
+        llmResults: {},
+        drainedBatchIds: new Set(),
+        // Accumulated per-batch LLM errors (res.errors) across all drained
+        // batches — folded into the session summary at completion.
+        errors: [],
+      };
+      sessionCaches.set(session.id, cache);
+    }
+    const { allPosts, fileMeta, ruleHits, ruleResults, llmPosts, chunks } = cache;
 
     if (session.chunks_total !== chunks.length) {
       session = updateSession(session.id, { chunks_total: chunks.length });
@@ -428,16 +503,21 @@ async function _doAdvance(initial) {
     }
 
     const batchIds = [...session.batch_ids];
-    const llmResults = {};
 
-    // 2) Drain submitted batches.
+    // 2) Drain submitted batches. Skip batches already folded into the cache —
+    //    fetchBatchResults is a network round-trip per call, and previously we
+    //    re-fetched every batch on every tick.
     for (let i = 0; i < batchIds.length; i++) {
-      const res = await fetchBatchResults(batchIds[i], { apiKey, provider, model: session.model, wait: false });
+      const bid = batchIds[i];
+      if (cache.drainedBatchIds.has(bid)) continue;
+      const res = await fetchBatchResults(bid, { apiKey, provider, model: session.model, wait: false });
       if (res.status !== 'completed') {
         return updateSession(session.id, { state: SESSION_STATE.PENDING, completed: i });
       }
-      Object.assign(llmResults, res.results);
-      updateBatch(batchIds[i], { status: 'completed', completed_at: new Date().toISOString() });
+      Object.assign(cache.llmResults, res.results);
+      cache.drainedBatchIds.add(bid);
+      if (res.errors?.length) cache.errors.push(...res.errors);
+      updateBatch(bid, { status: 'completed', completed_at: new Date().toISOString() });
       if (i >= session.completed) {
         const okCount  = Object.keys(res.results).length;
         const errCount = res.errors?.length ?? 0;
@@ -449,6 +529,7 @@ async function _doAdvance(initial) {
         appendSessionLog(session.id, msg + '）');
       }
     }
+    const llmResults = cache.llmResults;
 
     // 3) Submit next chunk if any.
     if (batchIds.length < chunks.length) {
@@ -521,12 +602,23 @@ async function _doAdvance(initial) {
       allPosts, fileMeta, allResults, userRisk, sourceStats,
     });
 
+    // Fold error stats into the persisted summary so the UI/report can surface
+    // them — classify_failed (LLM requests that errored) + unclassified (posts
+    // that entered the pipeline but got no result).
+    const errStats    = computeErrorStats(allPosts, allResults, cache.errors);
+    const fullSummary = { ...summary, ...errStats };
+    if (errStats.classify_failed || errStats.unclassified) {
+      const ex = errStats.error_sample[0];
+      appendSessionLog(session.id,
+        `⚠ ${errStats.classify_failed} 条分类失败 · ${errStats.unclassified} 条未分类`
+        + (ex ? `（示例：${ex.code} ${ex.message}）` : ''));
+    }
     appendSessionLog(session.id, `全部完成 · 输出 ${kolCount} 个 KOL 报告`);
     return updateSession(session.id, {
       state:        'completed',
       completed:    chunks.length,
       result_files,
-      summary,
+      summary:      fullSummary,
     });
   } catch (e) {
     // If we were cancelled, requestSessionCancel already set the state — do

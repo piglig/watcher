@@ -7,6 +7,7 @@
 
 import { extractFromDOM } from './extract.js';
 import { writeFileSync }  from 'fs';
+import { createLogger }   from '../../shared/logger.js';
 
 /**
  * Scroll a single Twitter tab and collect tweets into tweetMap.
@@ -23,10 +24,11 @@ import { writeFileSync }  from 'fs';
  * @param {boolean}  [opts.debug]
  */
 export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {}) {
-  const { maxTweets = 200, progressFile = null, shouldStop = () => false, debug = false, onProgress = null } = opts;
-  const dbg = (...m) => debug && console.log('[DBG]', ...m);
+  const { maxTweets = 200, progressFile = null, shouldStop = () => false, debug = false, onProgress = null, logger = null } = opts;
+  const log = createLogger(logger);
+  const dbg = (...m) => debug && log.log('[DBG]', ...m);
 
-  console.log(`\n[${label}] → ${tabUrl}`);
+  log.log(`[${label}] → ${tabUrl}`);
   await page.goto(tabUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForTimeout(2000);
 
@@ -34,7 +36,7 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
   try {
     await page.waitForSelector('article[data-testid="tweet"]', { timeout: 20_000 });
   } catch {
-    console.warn(`[${label}] No tweet articles after 20s — skipping.`);
+    log.warn(`[${label}] No tweet articles after 20s — skipping.`);
     return;
   }
 
@@ -47,14 +49,14 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
 
     // P0: bail if session expired mid-scrape
     if (state.sessionExpired) {
-      console.error('\n[ERROR] Session expired during scrape. Re-run with --headed to re-login.');
+      log.error('Session expired during scrape. Re-run with --headed to re-login.');
       break;
     }
 
     // P1: respect rate-limit pause
     const pause = (state.rateLimitUntil ?? 0) - Date.now();
     if (pause > 0) {
-      console.warn(`[WARN] Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
+      log.warn(`Rate limit — waiting ${Math.ceil(pause / 1000)}s...`);
       await page.waitForTimeout(pause);
     }
 
@@ -65,12 +67,12 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
       if (!tweetMap.has(t.id)) tweetMap.set(t.id, t);
     }
 
-    console.log(`[${label}] ${tweetMap.size} tweets (scroll #${round})`);
+    log.log(`[${label}] ${tweetMap.size} tweets (scroll #${round})`);
     if (onProgress) onProgress(tweetMap.size);
 
     // P2: early stop — all visible tweets are older than --since
     if (shouldStop(domTweets)) {
-      console.log(`\n  [${label}] All tweets older than --since cutoff. Stopping early.`);
+      log.log(`[${label}] All tweets older than --since cutoff. Stopping early.`);
       break;
     }
 
@@ -116,7 +118,7 @@ export async function scrollTab(page, tabUrl, label, tweetMap, state, opts = {})
       document.body.innerText.includes("You've reached the end")
     );
     if (endOfLine) {
-      console.log(`\n  [${label}] Reached end of timeline.`);
+      log.log(`[${label}] Reached end of timeline.`);
       break;
     }
   }

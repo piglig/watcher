@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
 import StatusPanel from '../components/StatusPanel.js';
+import ElapsedTimer from '../components/ElapsedTimer.js';
 import { SYM } from '../theme.js';
-import { useElapsed } from '../hooks/useElapsed.js';
 import { submitBatch, fetchBatchResults, loadOsintDir, extractScrapeTargets, renderAccountsSummary, enrichFromBios } from '../../osint/index.js';
 import { BATCH_STATUS } from '../../shared/batch-store.js';
 import { osintStagingDir, kolDir, ensureDir, pathSafe } from '../../shared/paths.js';
@@ -66,7 +66,6 @@ export default function OsintRun({ config, onNav }) {
   const [status, setStatus]     = useState('running');
   const [result, setResult]     = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
-  const elapsed = useElapsed(status === 'running');
   const launched = useRef(false);
 
   useInput((input, key) => {
@@ -155,7 +154,7 @@ export default function OsintRun({ config, onNav }) {
       <StatusPanel
         color={statusColor}
         label={statusLabel}
-        elapsed={status === 'running' ? elapsed : undefined}
+        headerRight={status === 'running' ? <ElapsedTimer active /> : null}
         error={status === 'error' ? errorMsg : undefined}
       />
 

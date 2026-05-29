@@ -8,6 +8,8 @@
  * Env vars: BLUESKY_IDENTIFIER (handle), BLUESKY_APP_PASSWORD
  */
 
+import { createLogger } from '../../shared/logger.js';
+
 const BSKY_API = 'https://bsky.social/xrpc';
 
 const R18_LABELS = new Set([
@@ -48,21 +50,21 @@ function makeHeaders(accessJwt) {
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
-async function apiGet(path, params, headers, debug = false) {
+async function apiGet(path, params, headers, debug = false, log = createLogger()) {
   const url = new URL(`${BSKY_API}/${path}`);
   for (const [k, v] of Object.entries(params)) {
     if (v != null) url.searchParams.set(k, String(v));
   }
 
-  if (debug) console.log('[DBG] GET', url.toString());
+  if (debug) log.log('[DBG] GET', url.toString());
 
   const res = await fetch(url.toString(), { headers });
 
   if (res.status === 429) {
     const wait = Number(res.headers.get('Retry-After') ?? 5);
-    console.warn(`[WARN] Bluesky rate limit — waiting ${wait}s...`);
+    log.warn(`[WARN] Bluesky rate limit — waiting ${wait}s...`);
     await new Promise(r => setTimeout(r, wait * 1000));
-    return apiGet(path, params, headers, debug);
+    return apiGet(path, params, headers, debug, log);
   }
 
   if (!res.ok) {
@@ -220,17 +222,17 @@ export async function scrapeBlueskyUser(handle, headers, opts = {}) {
     max    = 200,
     filter = 'posts_with_replies',
     debug  = false,
+    logger = null,
     ...filterOpts
   } = opts;
+  const log = createLogger(logger);
 
-  console.log(`\n${'═'.repeat(52)}`);
-  console.log(`  @${handle}  [Bluesky]`);
-  console.log(`${'═'.repeat(52)}`);
+  log.log(`  @${handle}  [Bluesky]`);
 
   const filterFn = buildFilter(filterOpts);
 
-  console.log(`Bluesky: fetching profile @${handle}...`);
-  const profileData = await apiGet('app.bsky.actor.getProfile', { actor: handle }, headers, debug);
+  log.log(`Bluesky: fetching profile @${handle}...`);
+  const profileData = await apiGet('app.bsky.actor.getProfile', { actor: handle }, headers, debug, log);
   const profile     = parseProfile(profileData);
 
   const postMap = new Map();
@@ -244,7 +246,7 @@ export async function scrapeBlueskyUser(handle, headers, opts = {}) {
     };
     if (cursor) params.cursor = cursor;
 
-    const data = await apiGet('app.bsky.feed.getAuthorFeed', params, headers, debug);
+    const data = await apiGet('app.bsky.feed.getAuthorFeed', params, headers, debug, log);
 
     for (const item of (data.feed ?? [])) {
       const p = parsePost(item);
@@ -253,7 +255,7 @@ export async function scrapeBlueskyUser(handle, headers, opts = {}) {
 
     cursor = data.cursor;
     if (!cursor || !data.feed?.length) break;
-    console.log(`Bluesky: ${postMap.size} posts collected...`);
+    log.log(`Bluesky: ${postMap.size} posts collected...`);
   }
 
   const posts = Array.from(postMap.values())
@@ -262,7 +264,7 @@ export async function scrapeBlueskyUser(handle, headers, opts = {}) {
     .slice(0, max);
 
   const r18Count = posts.filter(p => p.is_r18).length;
-  console.log(`Bluesky: ${posts.length} posts (${r18Count} R18)`);
+  log.log(`Bluesky: ${posts.length} posts (${r18Count} R18)`);
 
   return { profile, posts };
 }
@@ -289,8 +291,10 @@ export async function scrapeBluesky(usernames, opts = {}) {
     identifier  = process.env.BLUESKY_IDENTIFIER,
     appPassword = process.env.BLUESKY_APP_PASSWORD,
     debug       = false,
+    logger: rawLogger = null,
     ...userOpts
   } = opts;
+  const log = createLogger(rawLogger);
 
   if (!identifier || !appPassword) {
     throw new Error(
@@ -300,14 +304,14 @@ export async function scrapeBluesky(usernames, opts = {}) {
     );
   }
 
-  console.log('Bluesky: authenticating...');
+  log.log('Bluesky: authenticating...');
   const session = await createSession(identifier, appPassword);
   const headers = makeHeaders(session.accessJwt);
-  console.log(`Bluesky: logged in as @${session.handle}`);
+  log.log(`Bluesky: logged in as @${session.handle}`);
 
   const results = {};
   for (const handle of handles) {
-    results[handle] = await scrapeBlueskyUser(handle, headers, { debug, ...userOpts });
+    results[handle] = await scrapeBlueskyUser(handle, headers, { debug, logger: rawLogger, ...userOpts });
   }
   return results;
 }
