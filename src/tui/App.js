@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { Box } from 'ink';
 import { useWindowSize } from './hooks/useWindowSize.js';
 import Header        from './components/Header.js';
@@ -17,12 +17,6 @@ import PipelineRun   from './screens/PipelineRun.js';
 import JobsList      from './screens/JobsList.js';
 import DataPreview   from './screens/DataPreview.js';
 
-import { listActiveSessions, getSession, appendSessionLog, SESSION_STATE } from '../shared/sessions-store.js';
-import { listPendingBatches } from '../shared/batch-store.js';
-import { advanceSession } from '../classifier/session.js';
-import { fetchBatchResults } from '../osint/index.js';
-import { finalizeWorkflowFromSession, runWorkflowQueue } from '../workflow/orchestrator.js';
-
 const SUBTITLES = {
   menu:             '多平台内容风险审查',
   settings:         '设置',
@@ -40,76 +34,27 @@ const SUBTITLES = {
   'data-preview':   '数据预览',
 };
 
-// Daemon tick: every 30s, advance all non-terminal classify sessions AND
-// poll any pending OSINT batches. Runs for the lifetime of the App
-// (mounted once, regardless of screen), so a batch that finished while
-// the user was away gets pulled down + marked completed on the next tick.
-function useSessionDaemon() {
-  const tickingRef = useRef(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const tick = async () => {
-      if (tickingRef.current) return;        // skip overlap
-      tickingRef.current = true;
-      try {
-        // ── Classify sessions ─────────────────────────────────────────
-        const active = listActiveSessions();
-        for (const s of active) {
-          if (cancelled) break;
-          const next = await advanceSession(s);
-          if (next?.state === SESSION_STATE.COMPLETED && next.workflow_id) {
-            // Route finalize failures into the session log so they surface in
-            // SessionView — console.* is invisible (and corrupts the Ink render)
-            // while the TUI owns the terminal.
-            try { await finalizeWorkflowFromSession(next); }
-            catch (e) { appendSessionLog(next.id, `⚠ 报告汇总失败：${e.message ?? e}`); }
-          }
-        }
-
-        // ── OSINT batches ─────────────────────────────────────────────
-        // `fetchBatchResults` itself updates batch-store on completion.
-        const xaiKey = process.env.XAI_API_KEY;
-        if (xaiKey) {
-          const pending = listPendingBatches().filter(b => b.kind === 'osint');
-          for (const b of pending) {
-            if (cancelled) break;
-            if (!b.out_dir) continue;
-            try {
-              await fetchBatchResults(b.id, { apiKey: xaiKey, outDir: b.out_dir, wait: false });
-            } catch (e) {
-              console.warn(`[osint] daemon advance ${b.id.slice(-12)} failed:`, e.message ?? e);
-            }
-          }
-        }
-
-        // ── Workflows ─────────────────────────────────────────────────
-        // Kick the sequential workflow queue so a multi-KOL batch finishes on
-        // its own (OSINT retrieval → scrape, one KOL/stage at a time). Fired
-        // WITHOUT await: the queue's long scrape stage must never block this
-        // tick, and its `busy` mutex makes re-kicks no-ops. From classify_pending
-        // onward the workflow-bound session is advanced by the classify loop
-        // above, so the queue doesn't touch it.
-        runWorkflowQueue().catch(e => console.warn('[workflow] queue failed:', e.message ?? e));
-      } finally {
-        tickingRef.current = false;
-      }
-    };
-
-    // Immediate first tick, then every 30s.
-    tick();
-    const timer = setInterval(tick, 30_000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, []);
-}
+// No background daemon. Long-running jobs advance ONLY in the foreground:
+//   - the classify run screens (ClassifyRun / PipelineRun) drive their own
+//     session via useAdvanceSession while open;
+//   - WorkflowRun drives its workflow (incl. the classify session) via its
+//     countdown / manual keys;
+//   - JobsList offers a manual "推进 / 下载" key (r) for any pending job.
+// Nothing polls or classifies in the background, so parking on a completed
+// page does zero work.
+//
+// The root Box is sized to the full viewport (height={rows}) with overflow
+// hidden. We render into the alternate screen (see main.js), so this is a
+// proper fullscreen app: Ink clips each frame to the viewport and the
+// alternate buffer keeps no scrollback, so a resize is always O(viewport) —
+// it can never accumulate the unbounded buffer that used to freeze the
+// terminal. height={rows} re-yogas the tree on each resize, but useWindowSize
+// debounces resize bursts so that cost only lands once per drag.
 
 export default function App() {
   const [screen, setScreen]    = useState('menu');
   const [navParams, setParams] = useState({});
   const { rows, columns }      = useWindowSize();
-
-  useSessionDaemon();
 
   const onNav = (target, params = {}) => {
     setParams(params);
@@ -117,7 +62,7 @@ export default function App() {
   };
 
   return (
-    <Box flexDirection="column" width={columns}>
+    <Box flexDirection="column" width={columns} height={rows} overflow="hidden">
       <Header subtitle={SUBTITLES[screen]} />
       {screen === 'menu'           && <MainMenu       onNav={onNav} />}
       {screen === 'settings'       && <Settings       onNav={onNav} />}

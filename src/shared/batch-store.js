@@ -36,24 +36,9 @@ export function updateBatch(batchId, updates) {
   return store.update(batchId, updates);
 }
 
-export function listBatches() {
-  return store.list();
-}
-
 /** Batches of a given kind ('osint', 'classify', ...). Indexed lookup. */
 export function listBatchesByKind(kind) {
   return store.findWhere(`kind = ?`, kind);
-}
-
-/** Pending batches only (any kind). Indexed lookup. */
-export function listPendingBatches() {
-  return store.findWhere(`status = ?`, BATCH_STATUS.PENDING);
-}
-
-/** Most recently submitted batch still pending; null if none. */
-export function findLastPending() {
-  const recs = store.findWhere(`status = ?`, BATCH_STATUS.PENDING);
-  return recs[0] ?? null;
 }
 
 export function deleteBatch(batchId) {

@@ -40,6 +40,23 @@ function unwrapTweetResult(raw) {
   return raw?.tweet ?? raw;
 }
 
+// Extract author fields from a user_results.result object, tolerant of X's
+// schema migration: `screen_name`/`name` moved out of `legacy` into a new
+// top-level `core` object, and the blue check moved to `is_blue_verified`.
+// `followers_count` is still under `legacy`. We read the new location first
+// and fall back to the old one so both schema versions keep working.
+function extractUser(userResult) {
+  const legacy = userResult?.legacy ?? {};
+  const core   = userResult?.core   ?? {};
+  return {
+    id:        userResult?.rest_id ?? legacy.id_str ?? null,
+    username:  core.screen_name ?? legacy.screen_name,
+    name:      core.name        ?? legacy.name,
+    verified:  userResult?.is_blue_verified ?? legacy.verified ?? false,
+    followers: legacy.followers_count ?? 0,
+  };
+}
+
 function parseTweetResult(raw) {
   if (!raw) return null;
 
@@ -50,7 +67,7 @@ function parseTweetResult(raw) {
   const tweetData = result.legacy;
   if (!tweetId || !tweetData) return null;
 
-  const userData = result.core?.user_results?.result?.legacy ?? {};
+  const user     = extractUser(result.core?.user_results?.result);
   const views    = parseInt(result.views?.count ?? '0', 10) || 0;
 
   // For retweets: extract the original tweet's full text and author for context.
@@ -60,11 +77,11 @@ function parseTweetResult(raw) {
   if (tweetData.retweeted_status_result) {
     const origResult = unwrapTweetResult(tweetData.retweeted_status_result);
     const origLegacy = origResult?.legacy ?? {};
-    const origUser   = origResult?.core?.user_results?.result?.legacy ?? {};
+    const origUser   = extractUser(origResult?.core?.user_results?.result);
     if (origLegacy.full_text) text = origLegacy.full_text;
     rtFrom = {
       tweet_id: origResult?.rest_id ?? null,
-      username: origUser.screen_name ?? null,
+      username: origUser.username ?? null,
     };
   }
 
@@ -72,19 +89,19 @@ function parseTweetResult(raw) {
     id:         tweetId,
     authorId:   tweetData.user_id_str ?? null,   // numeric author ID from legacy; used for ownership filtering
     platform:   'twitter',
-    url:        userData.screen_name
-      ? `https://x.com/${userData.screen_name}/status/${tweetId}`
+    url:        user.username
+      ? `https://x.com/${user.username}/status/${tweetId}`
       : `https://x.com/i/web/status/${tweetId}`,
     text,
     created_at: tweetData.created_at
       ? new Date(tweetData.created_at).toISOString()
       : null,
     author: {
-      id:        userData.id_str,
-      username:  userData.screen_name,
-      name:      userData.name,
-      verified:  userData.verified        ?? false,
-      followers: userData.followers_count ?? 0,
+      id:        user.id,
+      username:  user.username,
+      name:      user.name,
+      verified:  user.verified,
+      followers: user.followers,
     },
     metrics: {
       replies:  tweetData.reply_count    ?? 0,

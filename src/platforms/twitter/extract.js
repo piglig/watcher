@@ -34,8 +34,14 @@ export async function extractFromDOM(page) {
         return num ? parseInt(num, 10) : 0;
       };
 
+      const isRetweet = !!article.querySelector('[data-testid="socialContext"]');
       return {
         id:         tweetId,
+        // Tag platform + canonical fields so DOM-sourced tweets share the
+        // interceptor's shape. Without `platform`, normalizeToPost() throws
+        // "Unknown platform: undefined" and aborts the whole save.
+        platform:   'twitter',
+        authorId:   null,   // DOM can't resolve the numeric id; ownership falls back to username
         url:        tweetId ? `https://x.com/${username}/status/${tweetId}` : '',
         text:       textEl?.innerText ?? '',
         created_at: timeEl?.getAttribute('datetime') ?? '',
@@ -48,7 +54,9 @@ export async function extractFromDOM(page) {
           views:    getStat('analyticsButton'),
         },
         media:      [],
-        is_retweet: !!article.querySelector('[data-testid="socialContext"]'),
+        type:       isRetweet ? 'retweet' : 'tweet',
+        rt_from:    null,
+        is_retweet: isRetweet,
         is_quote:   false,
         is_reply:   false,
         lang:       '',

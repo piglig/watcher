@@ -7,8 +7,9 @@
 
 import { resolve }           from 'path';
 import { waitForLoginSignal } from '../../shared/login-signal.js';
-import { existsSync, mkdirSync, rmSync } from 'fs';
-import { launchPersistentContext } from 'cloakbrowser';
+import {
+  launchSessionContext, saveSessionState, hasSavedSession, clearSessionState,
+} from '../../shared/browser.js';
 import { createLogger }      from '../../shared/logger.js';
 
 export const DEFAULT_SESSION_DIR = resolve('sessions/naver');
@@ -23,15 +24,6 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
 const DETAIL_BASE = 'https://article.cafe.naver.com/gw/v4/cafes';
 
 // ── Browser helpers ───────────────────────────────────────────────────────────
-
-function sessionExists(dir) {
-  return existsSync(resolve(dir, 'Default'));
-}
-
-async function createBrowser(sessionDir, headless) {
-  mkdirSync(sessionDir, { recursive: true });
-  return launchPersistentContext({ userDataDir: sessionDir, headless, humanize: true });
-}
 
 async function setupPage(context) {
   const page = await context.newPage();
@@ -399,13 +391,12 @@ export async function scrapeNaver(targets, opts = {}) {
   } = opts;
   const log = createLogger(rawLogger);
 
-  if (resetSession && existsSync(sessionDir))
-    rmSync(sessionDir, { recursive: true, force: true });
+  if (resetSession) clearSessionState(sessionDir);
 
-  if (!sessionExists(sessionDir) && !headed)
+  if (!hasSavedSession(sessionDir) && !headed)
     throw new Error('No saved session. Run with --headed to log in first.');
 
-  const context = await createBrowser(sessionDir, !headed);
+  const context = await launchSessionContext(sessionDir, { headless: !headed });
 
   try {
     const loginPage = await context.newPage();
@@ -423,6 +414,9 @@ export async function scrapeNaver(targets, opts = {}) {
     } else {
       log.log('Session active.');
     }
+    // Persist cookies + localStorage so the next launch is logged in (the
+    // isolated context has no profile to write them back to automatically).
+    await saveSessionState(context, sessionDir);
     await loginPage.close();
 
     const page    = await setupPage(context);

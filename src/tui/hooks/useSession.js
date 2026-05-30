@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { getSession, listSessions, listSessionsLite, TERMINAL_STATES } from '../../shared/sessions-store.js';
+import { getSession, listSessionsLite, TERMINAL_STATES } from '../../shared/sessions-store.js';
+import { advanceSession } from '../../classifier/session.js';
 
 /**
  * useSession(id) — re-reads the session record from disk every `intervalMs`
@@ -37,6 +38,39 @@ export function useSession(id, intervalMs = 5000) {
   return session;
 }
 
+/**
+ * useAdvanceSession(id) — foreground driver for a classify session. While the
+ * owning run screen is mounted and the session is non-terminal, kick
+ * advanceSession on an interval (default 30s, matching the old daemon cadence).
+ * advanceSession only moves one step per call (submit a chunk / drain a batch /
+ * finalize), so repeated kicks are how a session reaches completion.
+ *
+ * This replaces the App-level background daemon: work happens ONLY while the
+ * user is looking at the session. Navigate away → it pauses; reopen it (or use
+ * JobsList's manual "推进" key) → it resumes. advanceSession has its own
+ * in-process lock, so overlapping kicks are safe no-ops. We stop the interval
+ * the moment a tick observes a terminal state, so a completed page does no work.
+ */
+export function useAdvanceSession(id, intervalMs = 30000) {
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    let timer = null;
+    const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+    const tick = async () => {
+      if (cancelled) return;
+      let next;
+      try { next = await advanceSession({ id }); }
+      catch { return; }   // failures are persisted into session state by advanceSession
+      if (cancelled) return;
+      if (!next || TERMINAL_STATES.has(next.state)) stop();
+    };
+    tick();                                  // immediate kick on mount / id change
+    timer = setInterval(tick, intervalMs);
+    return () => { cancelled = true; stop(); };
+  }, [id, intervalMs]);
+}
+
 function usePolledList(lister, intervalMs) {
   const [items, setItems] = useState(lister);
   useEffect(() => {
@@ -46,11 +80,6 @@ function usePolledList(lister, intervalMs) {
     return () => clearInterval(t);
   }, [lister, intervalMs]);
   return items;
-}
-
-/** Full-record session list. Prefer useSessionsLite for list UIs. */
-export function useSessions(intervalMs = 2000) {
-  return usePolledList(listSessions, intervalMs);
 }
 
 /**

@@ -38,7 +38,7 @@ function stateMeta(state) {
   return STATE_META[state] ?? { color: 'gray', icon: '·', label: state ?? '?' };
 }
 
-export default function SessionView({ session, scrapeResult, emptyText = '加载中…' }) {
+export default function SessionView({ session, scrapeResult, emptyText = '加载中…', onModeChange }) {
   if (!session) {
     return (
       <Box borderStyle="round" borderColor="gray" borderDimColor paddingX={2}>
@@ -101,7 +101,7 @@ export default function SessionView({ session, scrapeResult, emptyText = '加载
 
       {/* Completion summary — sorted, paginated KOL list */}
       {session.state === SESSION_STATE.COMPLETED && (
-        <CompletionSummary session={session} />
+        <CompletionSummary session={session} onModeChange={onModeChange} />
       )}
     </Box>
   );
@@ -125,7 +125,7 @@ function primaryReportFile(k) {
       ?? null;
 }
 
-function CompletionSummary({ session }) {
+function CompletionSummary({ session, onModeChange }) {
   const sorted = useMemo(() => (
     [...(session.result_files ?? [])].sort((a, b) =>
       (RISK_ORDER[a.risk_level] ?? 9) - (RISK_ORDER[b.risk_level] ?? 9)
@@ -169,10 +169,11 @@ function CompletionSummary({ session }) {
       </Box>
     );
   }, []);
-  const onSelect = useCallback((it) => {
-    const f = primaryReportFile(it);
-    if (f) process.stdout.write(`\n${hyperlink(f, '→ ' + it.name)}\n`);
-  }, []);
+  // The account name is already rendered as an OSC-8 hyperlink (see renderItem),
+  // which is the documented "点击账号名打开报告" path. We must NOT write to
+  // stdout here: under the alternate screen there is no scrollback to print into
+  // and a raw write would corrupt Ink's frame. So Enter is a no-op.
+  const onSelect = useCallback(() => {}, []);
   const onCancel = useCallback(() => {}, []);
 
   return (
@@ -209,6 +210,7 @@ function CompletionSummary({ session }) {
             renderItem={renderItem}
             onSelect={onSelect}
             onCancel={onCancel}
+            onModeChange={onModeChange}
             emptyText="无 KOL 报告"
             reservedLines={12}
           />

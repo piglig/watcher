@@ -22,7 +22,7 @@ import {
 import { useSessionsLite } from '../hooks/useSession.js';
 import { cancelBatch as cancelXaiBatch } from '../../osint/xai-client.js';
 import { fetchBatchResults } from '../../osint/index.js';
-import { regenerateReports, requestSessionCancel, retryErroredSession } from '../../classifier/session.js';
+import { advanceSession, regenerateReports, requestSessionCancel, retryErroredSession } from '../../classifier/session.js';
 import { getConfig } from '../../shared/config-store.js';
 import { OpenAI } from 'openai';
 import { GoogleGenAI } from '@google/genai';
@@ -193,6 +193,30 @@ export default function JobsList({ onNav }) {
     }
   };
 
+  // Manual one-shot advance for a pending/submitting classify session. With no
+  // background daemon, this (or opening the session) is how a submitted batch
+  // gets polled + downloaded + finalized. advanceSession moves one step per
+  // call, so each press drains/submits one batch; repeat until 已完成.
+  const advancePendingSession = async (row) => {
+    if (busy) return;
+    setBusy(true);
+    setFeedback(`${SYM.run} 正在推进 ${row.id.slice(-12)} ...`);
+    try {
+      const next = await advanceSession({ id: row.id });
+      setFeedback(
+        next?.state === SESSION_STATE.COMPLETED
+          ? `${SYM.check} ${row.id.slice(-12)} 已完成，Enter 查看`
+          : next?.state === SESSION_STATE.ERROR
+            ? `${SYM.warn} ${row.id.slice(-12)} 出错：${next.error ?? ''}`
+            : `${SYM.dot} ${row.id.slice(-12)} 仍在${STATE_LABEL[next?.state] ?? next?.state}：${next?.completed ?? 0}/${next?.chunks_total ?? '?'} 批 · 再按 r 继续`
+      );
+    } catch (e) {
+      setFeedback(`${SYM.warn} 推进失败：${e.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const regenerateClassifyReports = async (row) => {
     if (busy) return;
     setBusy(true);
@@ -218,6 +242,10 @@ export default function JobsList({ onNav }) {
       else if (item.kind === 'session' && item.state === SESSION_STATE.ERROR) {
         retryErroredSession(item.id);
         setFeedback(`${SYM.run} ${item.id.slice(-12)} 已重新开始下载，Enter 查看进度`);
+      }
+      else if (item.kind === 'session'
+        && (item.state === SESSION_STATE.PENDING || item.state === SESSION_STATE.SUBMITTING)) {
+        advancePendingSession(item);
       }
     }
     if (input === 'g' || input === 'G') {
@@ -280,7 +308,7 @@ export default function JobsList({ onNav }) {
                 { key: 'Enter',     label: '查看' },
                 { key: '/',         label: '搜索' },
                 { key: 'PgUp/PgDn', label: '翻页' },
-                { key: 'r',         label: '主动下载 / 重试出错任务' },
+                { key: 'r',         label: '推进 / 下载 · 重试出错任务' },
                 { key: 'g',         label: '重建报告 (Classify)' },
                 { key: 'c',         label: '取消' },
                 { key: 'ESC',       label: '返回' },

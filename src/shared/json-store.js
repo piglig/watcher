@@ -15,7 +15,7 @@
  *   makeId(prefix)
  *
  * Why SQLite: the old JSON files re-parsed multi-MB sessions.json on every
- * `getSession()` / `listSessions()` call, which on Windows was enough event-loop
+ * `getSession()` / list call, which on Windows was enough event-loop
  * blockage that the whole terminal would stop responding to WM_MOVE (= the
  * "completion page freeze + can't drag the window" bug). SQLite gives us
  * row-level reads in microseconds and WAL gives us crash safety, while keeping

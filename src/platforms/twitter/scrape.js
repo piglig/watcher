@@ -225,7 +225,16 @@ export async function scrape(usernames, opts = {}) {
 
     const results = {};
     for (const username of names) {
-      results[username] = await scrapeUser(username, context, userOpts);
+      // Isolate per-account failures: one account erroring (e.g. timeout,
+      // suspended, transient network) must not discard the accounts that
+      // already succeeded — otherwise the runner sees the whole platform
+      // throw and reports 0 for everyone.
+      try {
+        results[username] = await scrapeUser(username, context, userOpts);
+      } catch (e) {
+        log.error(`@${username} failed: ${e?.message ?? e}`);
+        results[username] = [];
+      }
     }
     return results;
   } finally {

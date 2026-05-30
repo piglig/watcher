@@ -17,7 +17,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
 import StepBar from '../components/StepBar.js';
-import StaticLog from '../components/StaticLog.js';
+import LogPanel from '../components/LogPanel.js';
 import StatusPanel from '../components/StatusPanel.js';
 import ElapsedTimer from '../components/ElapsedTimer.js';
 import { SYM } from '../theme.js';
@@ -28,7 +28,8 @@ import { confirmLogin, isLoginPending } from '../../shared/login-signal.js';
 import { createSession, SESSION_STATE } from '../../shared/sessions-store.js';
 import { advanceSession } from '../../classifier/session.js';
 import { defaultModelForProvider, inferProvider } from '../../classifier/classifier.js';
-import { useSession } from '../hooks/useSession.js';
+import { useSession, useAdvanceSession } from '../hooks/useSession.js';
+import { useWindowSize } from '../hooks/useWindowSize.js';
 import SessionView from '../components/SessionView.js';
 import { join, resolve } from 'path';
 
@@ -41,14 +42,20 @@ export default function PipelineRun({ config, onNav, sessionId: initialSessionId
   const [sessionId, setSessionId]       = useState(initialSessionId ?? null);
   const [errorMsg, setErrorMsg]         = useState('');
   const [loginPending, setLoginPending] = useState(false);
+  const [pickerMode, setPickerMode]     = useState('nav');
 
   const launched   = useRef(false);
   const startedAt  = useRef(Date.now());
   const seq        = useRef(0);
 
   const session = useSession(sessionId);
+  // Foreground-drive the classify session while the screen is open (replaces the
+  // old background daemon). Pauses on navigate-away; resumes on return.
+  useAdvanceSession(sessionId);
+  const { rows } = useWindowSize();
 
-  // Stamped logger for scrape phase — parse once, append-only into <Static>.
+  // Stamped logger for scrape phase — parse once, append into the bounded
+  // LogPanel viewport (only the last N lines render; no <Static>/scrollback).
   const stampedLog = (line) => {
     const dt = Math.floor((Date.now() - startedAt.current) / 1000);
     const mm = String(Math.floor(dt / 60)).padStart(2, '0');
@@ -65,6 +72,9 @@ export default function PipelineRun({ config, onNav, sessionId: initialSessionId
 
   useInput((input, key) => {
     if (key.return && loginPending) { confirmLogin(); return; }
+    // While the results list is in search mode, the TextInput owns every key —
+    // don't let 'j' or ESC navigate away mid-query (that made search unusable).
+    if (pickerMode === 'search') return;
     if (phase === 'view' && (input === 'j' || input === 'J')) { onNav('jobs'); return; }
     if (key.escape && phase !== 'scraping') onNav('menu');
   });
@@ -135,7 +145,12 @@ export default function PipelineRun({ config, onNav, sessionId: initialSessionId
           )}
         </StatusPanel>
 
-        <StaticLog entries={logEntries} />
+        <LogPanel
+          logs={logEntries}
+          title="采集日志"
+          limit={Math.max(6, rows - 14)}
+          emptyText="等待采集输出…"
+        />
 
         {errorMsg && (
           <Box borderStyle="round" borderColor="red" paddingX={2}>
@@ -161,6 +176,7 @@ export default function PipelineRun({ config, onNav, sessionId: initialSessionId
         session={session}
         scrapeResult={scrapeResult}
         emptyText="正在创建 session…"
+        onModeChange={setPickerMode}
       />
 
       <KeyBar hints={[

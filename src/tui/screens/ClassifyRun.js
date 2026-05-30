@@ -13,16 +13,23 @@ import { SYM } from '../theme.js';
 import { createSession } from '../../shared/sessions-store.js';
 import { advanceSession } from '../../classifier/session.js';
 import { defaultModelForProvider } from '../../classifier/classifier.js';
-import { useSession } from '../hooks/useSession.js';
+import { useSession, useAdvanceSession } from '../hooks/useSession.js';
 import SessionView from '../components/SessionView.js';
 import { join, resolve } from 'path';
 
 export default function ClassifyRun({ config, onNav }) {
   const [sessionId, setSessionId] = useState(config?.sessionId ?? null);
   const [errorMsg,  setErrorMsg]  = useState('');
+  const [pickerMode, setPickerMode] = useState('nav');
   const session = useSession(sessionId);
+  // Foreground-drive this session while the screen is open (replaces the old
+  // background daemon). Pauses when we navigate away; resumes on return.
+  useAdvanceSession(sessionId);
 
   useInput((input, key) => {
+    // While the results list is in search mode, the TextInput owns every key —
+    // don't let 'j' or ESC navigate away mid-query (that made search unusable).
+    if (pickerMode === 'search') return;
     if (key.escape) { onNav('menu'); return; }
     if (input === 'j' || input === 'J') onNav('jobs');
   });
@@ -71,7 +78,7 @@ export default function ClassifyRun({ config, onNav }) {
           <Text color="red">{SYM.cross} {errorMsg}</Text>
         </Box>
       ) : (
-        <SessionView session={session} emptyText="正在创建 session…" />
+        <SessionView session={session} emptyText="正在创建 session…" onModeChange={setPickerMode} />
       )}
 
       <KeyBar hints={[

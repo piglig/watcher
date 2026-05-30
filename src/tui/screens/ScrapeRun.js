@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
-import StaticLog from '../components/StaticLog.js';
+import LogPanel from '../components/LogPanel.js';
 import StatusPanel from '../components/StatusPanel.js';
+import { useWindowSize } from '../hooks/useWindowSize.js';
 import ElapsedTimer from '../components/ElapsedTimer.js';
 import { SYM } from '../theme.js';
 import { parseLogLine } from '../parseLogLine.js';
@@ -14,6 +15,7 @@ import { enrichFromScrapedProfiles, discoveriesToPlatformConfigs } from '../../o
 import { kolDir } from '../../shared/paths.js';
 
 export default function ScrapeRun({ config, onNav }) {
+  const { rows } = useWindowSize();
   const [logEntries, setLogEntries]   = useState([]);
   const [status, setStatus]           = useState('running');
   const [result, setResult]           = useState(null);
@@ -23,8 +25,9 @@ export default function ScrapeRun({ config, onNav }) {
   const launched  = useRef(false);
   const seq       = useRef(0);
 
-  // Append-only: parse each raw line once, then concat. Never slice — <Static>
-  // dedups by index and old lines live in scrollback at zero re-render cost.
+  // Append-only: parse each raw line once, then concat. LogPanel renders only
+  // the last N entries, so the in-frame height stays bounded regardless of how
+  // long the run streams. (Older lines stay in state but are never rendered.)
   const pushLogs = useCallback((rawLines) => {
     setLogEntries(prev =>
       prev.concat(rawLines.map(r => ({ id: seq.current++, ...parseLogLine(r) }))));
@@ -140,9 +143,16 @@ export default function ScrapeRun({ config, onNav }) {
         )}
       </StatusPanel>
 
-      {/* ── Log stream — append-only into scrollback so old lines never
-            re-render. Stays visible after completion for inspection. ── */}
-      <StaticLog entries={logEntries} />
+      {/* ── Log stream — bounded last-N viewport inside the frame. We run in
+            the alternate screen (no scrollback), so logs must NOT use <Static>
+            (which re-blits its whole history every fullscreen frame). Only the
+            most recent lines are shown. ── */}
+      <LogPanel
+        logs={logEntries}
+        title="采集日志"
+        limit={Math.max(6, rows - 14)}
+        emptyText="等待采集输出…"
+      />
 
       {/* ── Result panel ── */}
       {status === 'done' && result && (

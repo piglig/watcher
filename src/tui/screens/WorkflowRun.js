@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import KeyBar from '../components/KeyBar.js';
 import StepBar from '../components/StepBar.js';
-import StaticLog from '../components/StaticLog.js';
+import LogPanel from '../components/LogPanel.js';
 import ElapsedTimer from '../components/ElapsedTimer.js';
+import { useWindowSize } from '../hooks/useWindowSize.js';
 import Countdown from '../components/Countdown.js';
 import { SYM } from '../theme.js';
 import { parseLogLine } from '../parseLogLine.js';
@@ -33,6 +34,7 @@ const STATE_TO_STAGE = {
 const stateToStage = (state) => STATE_TO_STAGE[state] ?? 0;
 
 export default function WorkflowRun({ config, onNav }) {
+  const { rows } = useWindowSize();
   const [logEntries, setLogEntries] = useState([]);
   const [wf, setWf]               = useState(null);
   const [busy, setBusy]           = useState(true);
@@ -122,8 +124,8 @@ export default function WorkflowRun({ config, onNav }) {
       const res = await runWorkflowScrape(wf.id, { onLog: log });
       refreshWf(wf.id);
       if (res.state === WORKFLOW_STATE.CLASSIFY_PENDING) {
-        log(`Classify session ${res.sessionId} 已创建 — daemon 在后台推进。`);
-        log(`可安全离开本屏，状态保存在 sessions.json。`);
+        log(`Classify session ${res.sessionId} 已创建。`);
+        log(`保持本屏打开将自动检索分类结果（或按 r 立即检索）；离开会暂停推进。`);
       }
     } catch (e) {
       setErrorMsg(e?.message ?? String(e));
@@ -222,7 +224,14 @@ export default function WorkflowRun({ config, onNav }) {
         )}
       </Box>
 
-      <StaticLog entries={logEntries} />
+      {/* Bounded last-N log viewport — see ScrapeRun: no <Static> under the
+          alternate screen, which has no scrollback to absorb its history. */}
+      <LogPanel
+        logs={logEntries}
+        title="任务日志"
+        limit={Math.max(6, rows - 16)}
+        emptyText="等待任务输出…"
+      />
 
       {errorMsg && (
         <Box borderStyle="round" borderColor="red" paddingX={2}>

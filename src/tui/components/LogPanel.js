@@ -1,10 +1,11 @@
 /**
  * LogPanel — fixed-window bordered log container.
  *
- * Now used ONLY for disk-sourced, low-frequency logs (SessionView's
- * session.logs, re-read every poll with a fresh array identity). High-frequency
- * streaming logs on the run screens use <StaticLog> instead, which prints each
- * line once into terminal scrollback and never re-renders it.
+ * The bounded last-N viewport for every run screen (ScrapeRun / WorkflowRun /
+ * PipelineRun) and for SessionView's disk-sourced session.logs. We render in
+ * the alternate screen (no scrollback), so streaming logs CANNOT use <Static>
+ * (which would re-blit its whole history every fullscreen frame); they pass
+ * their append-only entries here and only the last `limit` lines are shown.
  *
  * Accepts either raw strings (parsed inline) or pre-parsed entry records.
  * React.memo'd so it skips re-render when its parent ticks but `logs` is

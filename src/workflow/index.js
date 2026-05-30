@@ -1,6 +1,6 @@
 export {
   WORKFLOW_STATE, STATES, STATE_LABELS,
-  createWorkflow, listWorkflows, listActiveWorkflows, getWorkflow,
+  createWorkflow, listWorkflows, getWorkflow,
   updateWorkflow, updateStage, deleteWorkflow,
 } from './store.js';
 
@@ -9,9 +9,7 @@ export {
   tryAdvanceOsint,
   runScrapeAndSubmitClassify,
   tryAdvanceClassify,
-  runWorkflowQueue,
   runWorkflowScrape,
-  isWorkflowBusy,
   buildWorkflowScrapeOpts,
 } from './orchestrator.js';
 

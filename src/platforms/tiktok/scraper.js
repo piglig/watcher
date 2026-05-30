@@ -6,8 +6,9 @@
 
 import { resolve }           from 'path';
 import { waitForLoginSignal } from '../../shared/login-signal.js';
-import { existsSync, mkdirSync, rmSync } from 'fs';
-import { launchPersistentContext } from 'cloakbrowser';
+import {
+  launchSessionContext, saveSessionState, hasSavedSession, clearSessionState,
+} from '../../shared/browser.js';
 import { createLogger } from '../../shared/logger.js';
 
 export const DEFAULT_SESSION_DIR = resolve('sessions/tiktok');
@@ -33,15 +34,6 @@ export function parseTikTokUser(raw) {
 }
 
 // ── Browser helpers ───────────────────────────────────────────────────────────
-
-function sessionExists(dir) {
-  return existsSync(resolve(dir, 'Default'));
-}
-
-async function createBrowser(sessionDir, headless) {
-  mkdirSync(sessionDir, { recursive: true });
-  return launchPersistentContext({ userDataDir: sessionDir, headless, humanize: true });
-}
 
 // Scraping page: block images/media but keep scripts for TikTok's JS engine
 async function setupPage(context) {
@@ -560,13 +552,12 @@ export async function scrapeTikTok(targets, opts = {}) {
   } = opts;
   const log = createLogger(rawLogger);
 
-  if (resetSession && existsSync(sessionDir))
-    rmSync(sessionDir, { recursive: true, force: true });
+  if (resetSession) clearSessionState(sessionDir);
 
-  if (!sessionExists(sessionDir) && !headed)
+  if (!hasSavedSession(sessionDir) && !headed)
     throw new Error('No saved session. Run with --headed to log in first.');
 
-  const context = await createBrowser(sessionDir, !headed);
+  const context = await launchSessionContext(sessionDir, { headless: !headed });
 
   try {
     // Login check
@@ -587,6 +578,9 @@ export async function scrapeTikTok(targets, opts = {}) {
     } else {
       log.log('Session active.');
     }
+    // Persist cookies + localStorage so the next launch is logged in (the
+    // isolated context has no profile to write them back to automatically).
+    await saveSessionState(context, sessionDir);
     await loginPage.close();
 
     const results = {};
